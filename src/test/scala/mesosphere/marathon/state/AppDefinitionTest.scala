@@ -3,14 +3,16 @@ package mesosphere.marathon.state
 import javax.validation.Validation
 
 import com.google.common.collect.Lists
-import mesosphere.marathon.MarathonSpec
-import mesosphere.marathon.Protos.ServiceDefinition
 import mesosphere.marathon.api.ModelValidation
+import mesosphere.marathon.MarathonSpec
+import mesosphere.marathon.health.HealthCheck
+import mesosphere.marathon.Protos.{ Constraint, ServiceDefinition }
 import mesosphere.marathon.state.PathId._
 import org.apache.mesos.Protos.CommandInfo
 import org.scalatest.Matchers
 
 import scala.collection.JavaConverters._
+import scala.concurrent.duration._
 
 class AppDefinitionTest extends MarathonSpec with Matchers with ModelValidation {
 
@@ -143,14 +145,12 @@ class AppDefinitionTest extends MarathonSpec with Matchers with ModelValidation 
     mapper.registerModule(new MarathonModule)
     mapper.registerModule(CaseClassModule)
 
-    val original = AppDefinition()
-    val json = mapper.writeValueAsString(original)
-    val readResult = mapper.readValue(json, classOf[AppDefinition])
+    val app1 = AppDefinition()
+    val json1 = mapper.writeValueAsString(app1)
+    val readResult1 = mapper.readValue(json1, classOf[AppDefinition])
+    assert(readResult1 == app1)
 
-    assert(readResult == original)
-
-    val json2 =
-      """
+    val json2 = """
       {
         "id": "toggle",
         "cmd": "python toggle.py $PORT0",
@@ -167,10 +167,43 @@ class AppDefinitionTest extends MarathonSpec with Matchers with ModelValidation 
         "ports": [0],
         "uris": ["http://downloads.mesosphere.io/misc/toggle.tgz"]
       }
-      """
-
+    """
     val readResult2 = mapper.readValue(json2, classOf[AppDefinition])
     assert(readResult2.healthChecks.head.command.isDefined)
+
+    val app3 = AppDefinition(
+      id = PathId("/prod/product/frontend/my-app"),
+      cmd = "sleep 30",
+      user = Some("nobody"),
+      env = Map("key1" -> "value1", "key2" -> "value2"),
+      instances = 5,
+      cpus = 5.0,
+      mem = 55.0,
+      disk = 550.0,
+      executor = "",
+      constraints = Set(
+        Constraint.newBuilder
+          .setField("attribute")
+          .setOperator(Constraint.Operator.GROUP_BY)
+          .setValue("value")
+          .build
+      ),
+      uris = Seq("hdfs://path/to/resource.zip"),
+      storeUrls = Seq("http://my.org.com/artifacts/foo.bar"),
+      ports = Seq(9001, 9002),
+      requirePorts = true,
+      backoff = 5.seconds,
+      backoffFactor = 1.5,
+      container = Some(
+        Container(docker = Some(Container.Docker("group/image")))
+      ),
+      healthChecks = Set(HealthCheck()),
+      dependencies = Set(PathId("/prod/product/backend")),
+      upgradeStrategy = UpgradeStrategy(minimumHealthCapacity = 0.75)
+    )
+    val json3 = mapper.writeValueAsString(app3)
+    val readResult3 = mapper.readValue(json3, classOf[AppDefinition])
+    assert(readResult3 == app3)
 
   }
 

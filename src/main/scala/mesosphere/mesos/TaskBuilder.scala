@@ -70,6 +70,7 @@ class TaskBuilder(app: AppDefinition,
     executor match {
       case CommandExecutor() =>
         builder.setCommand(TaskBuilder.commandInfo(app, ports))
+        for (c <- app.container) builder.setContainer(c.toProto)
 
       case PathExecutor(path) =>
         val executorId = f"marathon-${taskId.getValue}" // Fresh executor
@@ -81,7 +82,7 @@ class TaskBuilder(app: AppDefinition,
         val info = ExecutorInfo.newBuilder()
           .setExecutorId(ExecutorID.newBuilder().setValue(executorId))
           .setCommand(command)
-
+        for (c <- app.container) info.setContainer(c.toProto)
         builder.setExecutor(info)
         val binary = new ByteArrayOutputStream()
         mapper.writeValue(binary, app)
@@ -177,13 +178,6 @@ object TaskBuilder {
     val builder = CommandInfo.newBuilder()
       .setValue(app.cmd)
       .setEnvironment(environment(envMap))
-
-    for (c <- app.container) {
-      val container = CommandInfo.ContainerInfo.newBuilder()
-        .setImage(c.image)
-        .addAllOptions(c.options.asJava)
-      builder.setContainer(container)
-    }
 
     if (app.uris != null) {
       val uriProtos = app.uris.map(uri => {
