@@ -30,7 +30,7 @@ configure-stamp:
 helpers: helpers-stamp
 helpers-stamp:
 	# Check for sbt
-	which sbt 2>/dev/null && ( cd helpers; ln -sf "$(shell which sbt)" sbt )
+	which sbt 2>/dev/null && ( cd helpers; ln -sf "$(shell which sbt)" sbt ) || true
 	which sbt 2>/dev/null || ( cd helpers; dpkg-deb --extract sbt-0.13.5.deb sbt-local && ln -sf sbt-local/usr/share/sbt-launcher-packaging/bin/sbt sbt )
 	touch $@
 
@@ -48,7 +48,7 @@ build-stamp: configure-stamp helpers-stamp
 clean: helpers
 	dh_testdir
 	dh_testroot
-	rm -f build-stamp configure-stamp
+	rm -f build-stamp configure-stamp helpers-stamp
 
 	# Add here commands to clean up after the build process.
 	-$(SBT) clean
