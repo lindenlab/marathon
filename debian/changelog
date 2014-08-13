@@ -1,0 +1,6 @@
+marathon (0.7.0-SNAPSHOT) unstable; urgency=medium
+
+  * Initial debian package
+
+ -- Don Kjer <don@lindenlab.com>  Tue, 12 Aug 2014 07:13:24 +0000
+

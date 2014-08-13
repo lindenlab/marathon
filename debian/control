@@ -1,0 +1,13 @@
+Source: marathon
+Section: misc
+Priority: extra
+Maintainer: Mesosphere Package Builder <support@mesosphere.io>
+Homepage: https://github.com/mesosphere/marathon
+Build-Depends: debhelper (>= 5), openjdk-7-jdk
+Standards-Version: 3.7.2
+
+Package: marathon
+Architecture: any
+Depends: java7-runtime-headless | java6-runtime-headless
+Description: Cluster-wide init and control system for services running on Apache Mesos
+ Cluster-wide init and control system for services running on Apache Mesos
