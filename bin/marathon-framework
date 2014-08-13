@@ -62,9 +62,8 @@ function load_options_and_log {
 function run_jar {
   local log_format='%2$s%5$s%6$s%n' # Class name, message, exception
   ulimit -n 8192
-  export PATH=/usr/local/bin:"$PATH"
   local vm_opts=( -Xmx512m
-                  -Djava.library.path=/usr/local/lib
+                  -Djava.library.path=/usr/lib
                   -Djava.util.logging.SimpleFormatter.format="$log_format" )
   # TODO: Set main class in pom.xml and use -jar
   exec java "${vm_opts[@]}" -cp "$marathon_jar" mesosphere.marathon.Main "$@"
