@@ -2,8 +2,8 @@
 Description=Cluster-wide init and control system for Apache Mesos
 Documentation=http://mesosphere.io/docs/
 After=network.target
-PIDFile=/var/run/marathon.pid
 
 [Service]
 ExecStart=/usr/bin/marathon
+PIDFile=/var/run/marathon.pid
 
