@@ -7,3 +7,6 @@ After=network.target
 ExecStart=/usr/bin/marathon
 PIDFile=/var/run/marathon.pid
 
+[Install]
+WantedBy=multi-user.target
+
