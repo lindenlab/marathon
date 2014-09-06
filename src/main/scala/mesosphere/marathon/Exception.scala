@@ -10,7 +10,12 @@ class UnknownAppException(id: PathId) extends Exception(s"App '$id' does not exi
 
 class BadRequestException(msg: String) extends Exception(msg)
 
-class AppLockedException extends Exception("App is locked by another operation")
+case class AppLockedException(deploymentIds: Seq[String] = Nil)
+  extends Exception(
+    "App is locked by one or more deployments. " +
+      "Override with the option '?force=true'. " +
+      "View details at '/v2/deployments/<DEPLOYMENT_ID>'."
+  )
 
 class PortRangeExhaustedException(
   val minPort: Int,
@@ -19,6 +24,8 @@ class PortRangeExhaustedException(
 case class UpgradeInProgressException(msg: String) extends Exception(msg)
 
 case class CanceledActionException(msg: String) extends Exception(msg)
+
+case class ConflictingChangeException(msg: String) extends Exception(msg)
 
 /*
  * Task upgrade specific exceptions

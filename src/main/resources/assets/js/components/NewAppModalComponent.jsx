@@ -88,7 +88,7 @@ define([
       } else {
         modelAttrs.uris = [];
       }
-      
+
       // Constraints should be an Array of Strings.
       if ("constraints" in modelAttrs) {
         var constraintsArray = modelAttrs.constraints.split(",");
@@ -153,6 +153,7 @@ define([
         return <p key={i} className="text-danger"><strong>{error.message}</strong></p>;
       });
 
+      /* jshint trailing:false, quotmark:false, newcap:false */
       return (
         <ModalComponent ref="modalComponent" onDestroy={this.props.onDestroy}>
           <form method="post" role="form" onSubmit={this.onSubmit}>
@@ -192,7 +193,7 @@ define([
                   label="Disk Space (MB)"
                   model={model}
                   errors={errors}>
-              <input min="0" step="any" type="number" required />
+                <input min="0" step="any" type="number" required />
               </FormGroupComponent>
               <FormGroupComponent
                   attribute="instances"
@@ -215,7 +216,9 @@ define([
                   label="Executor"
                   model={model}
                   errors={errors}>
-                <input />
+                <input
+                  pattern={App.VALID_EXECUTOR_PATTERN}
+                  title="Executor must be the string '//cmd', a string containing only single slashes ('/'), or blank." />
               </FormGroupComponent>
               <FormGroupComponent
                   attribute="ports"

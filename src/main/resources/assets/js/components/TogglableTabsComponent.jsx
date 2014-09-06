@@ -5,6 +5,8 @@ define([
   "Underscore",
   "jsx!components/NavTabsComponent"
 ], function(React, _, NavTabsComponent) {
+  "use strict";
+
   return React.createClass({
     getInitialState: function() {
       return {
@@ -25,6 +27,7 @@ define([
         });
       }, this);
 
+      /* jshint trailing:false, quotmark:false, newcap:false */
       return (
         <div className={this.props.className}>
           <NavTabsComponent

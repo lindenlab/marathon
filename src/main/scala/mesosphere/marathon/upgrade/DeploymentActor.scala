@@ -1,6 +1,8 @@
 package mesosphere.marathon.upgrade
 
 import java.net.URL
+import mesosphere.marathon.event.{ DeploymentStatus, DeploymentStepSuccess, DeploymentStepFailure }
+
 import scala.concurrent.{ Future, Promise }
 import scala.util.{ Failure, Success }
 
@@ -31,6 +33,8 @@ class DeploymentActor(
   import mesosphere.marathon.upgrade.DeploymentActor._
 
   val steps = plan.steps.iterator
+  var currentStep: Option[DeploymentStep] = None
+  var currentStepNr: Int = 0
 
   override def preStart(): Unit = {
     self ! NextStep
@@ -44,7 +48,11 @@ class DeploymentActor(
 
   def receive = {
     case NextStep if steps.hasNext =>
-      performStep(steps.next()) onComplete {
+      val step = steps.next()
+      currentStepNr += 1
+      currentStep = Some(step)
+
+      performStep(step) onComplete {
         case Success(_) =>
           self ! NextStep
         case Failure(t) =>
@@ -59,6 +67,10 @@ class DeploymentActor(
     case Cancel(t) =>
       receiver ! Status.Failure(t)
       context.stop(self)
+
+    case RetrieveCurrentStep =>
+      log.info("retrieving current step")
+      sender ! DeploymentStepInfo(currentStep.getOrElse(DeploymentStep(Nil)), currentStepNr)
   }
 
   def performStep(step: DeploymentStep): Future[Unit] = {
@@ -66,6 +78,8 @@ class DeploymentActor(
       Future.successful(())
     }
     else {
+      eventBus.publish(DeploymentStatus(plan, step))
+
       val futures = step.actions.map {
         case StartApplication(app, scaleTo) => startApp(app, scaleTo)
         case ScaleApplication(app, scaleTo) => scaleApp(app, scaleTo)
@@ -77,14 +91,17 @@ class DeploymentActor(
         case ResolveArtifacts(app, urls)                     => resolveArtifacts(app, urls)
       }
 
-      Future.sequence(futures).map(_ => ())
+      Future.sequence(futures).map(_ => ()) andThen {
+        case Success(_) => eventBus.publish(DeploymentStepSuccess(plan, step))
+        case Failure(_) => eventBus.publish(DeploymentStepFailure(plan, step))
+      }
     }
   }
 
   def startApp(app: AppDefinition, scaleTo: Int): Future[Unit] = {
     val promise = Promise[Unit]()
     context.actorOf(Props(classOf[AppStartActor], driver, scheduler, taskQueue, eventBus, app, scaleTo, promise))
-    storeOnSuccess(app, promise.future)
+    storeAndThen(app, promise.future)
   }
 
   def scaleApp(app: AppDefinition, scaleTo: Int): Future[Unit] = {
@@ -101,7 +118,7 @@ class DeploymentActor(
       killTasks(app.id, runningTasks.toSeq.sortBy(_.getStartedAt).drop(scaleTo))
     }
 
-    storeOnSuccess(app, res)
+    storeAndThen(app, res)
   }
 
   def killTasks(appId: PathId, tasks: Seq[MarathonTask]): Future[Unit] = {
@@ -131,7 +148,7 @@ class DeploymentActor(
     context.actorOf(Props(classOf[TaskKillActor], driver, app.id, taskTracker, eventBus, tasksToKill.toSet, stopPromise))
 
     val res = startPromise.future.zip(stopPromise.future).map(_ => ())
-    storeOnSuccess(app, res)
+    storeAndThen(app, res)
   }
 
   def resolveArtifacts(app: AppDefinition, urls: Map[URL, String]): Future[Unit] = {
@@ -140,14 +157,16 @@ class DeploymentActor(
     promise.future.map(_ => ())
   }
 
-  def storeOnSuccess[A](app: AppDefinition, future: Future[A]): Future[A] = for {
-    x <- future
+  def storeAndThen[A](app: AppDefinition, future: Future[A]): Future[A] = for {
     _ <- appRepository.store(app)
+    x <- future
   } yield x
 }
 
 object DeploymentActor {
   case object NextStep
   case object Finished
-  case class Cancel(reason: Throwable)
+  case object RetrieveCurrentStep
+  final case class DeploymentStepInfo(step: DeploymentStep, nr: Int)
+  final case class Cancel(reason: Throwable)
 }

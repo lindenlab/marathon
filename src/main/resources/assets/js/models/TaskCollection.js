@@ -2,6 +2,8 @@ define([
   "models/SortableCollection",
   "models/Task"
 ], function(SortableCollection, Task) {
+  "use strict";
+
   return SortableCollection.extend({
     model: Task,
 
@@ -12,11 +14,11 @@ define([
     },
 
     parse: function(response) {
-      return response.tasks;
+      return response.app.tasks;
     },
 
     url: function() {
-      return "/v2/apps/" + this.options.appId + "/tasks";
+      return "/v2/apps/" + this.options.appId;
     }
   });
 });

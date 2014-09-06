@@ -3,7 +3,13 @@ package mesosphere.marathon.api
 import javax.ws.rs.ext.{ Provider, ExceptionMapper }
 import javax.ws.rs.core.{ MediaType, Response }
 import scala.concurrent.TimeoutException
-import mesosphere.marathon.{ BadRequestException, UnknownAppException }
+import mesosphere.marathon.{
+  AppLockedException,
+  BadRequestException,
+  ConflictingChangeException,
+  UnknownAppException
+}
+import mesosphere.marathon.state.Identifiable
 import com.sun.jersey.api.NotFoundException
 import com.fasterxml.jackson.core.JsonParseException
 import javax.ws.rs.WebApplicationException
@@ -29,18 +35,25 @@ class MarathonExceptionMapper extends ExceptionMapper[Exception] {
   }
 
   private def statusCode(exception: Exception): Int = exception match {
-    case e: IllegalArgumentException => 422 // Unprocessable entity
-    case e: TimeoutException         => 504 // Gateway timeout
-    case e: UnknownAppException      => 404 // Not found
-    case e: BadRequestException      => 400 // Bad Request
-    case e: JsonParseException       => 400 // Bad Request
-    case e: WebApplicationException  => e.getResponse.getStatus
-    case _                           => 500 // Internal server error
+    case e: IllegalArgumentException   => 422 // Unprocessable entity
+    case e: TimeoutException           => 504 // Gateway timeout
+    case e: UnknownAppException        => 404 // Not found
+    case e: AppLockedException         => 409 // Conflict
+    case e: ConflictingChangeException => 409 // Conflict
+    case e: BadRequestException        => 400 // Bad Request
+    case e: JsonParseException         => 400 // Bad Request
+    case e: WebApplicationException    => e.getResponse.getStatus
+    case _                             => 500 // Internal server error
   }
 
   private def entity(exception: Exception): Any = exception match {
     case e: NotFoundException =>
       Map("message" -> s"URI not found: ${e.getNotFoundUri.getRawPath}")
+    case e: AppLockedException =>
+      Map(
+        "message" -> e.getMessage,
+        "deployments" -> e.deploymentIds.map(Identifiable(_))
+      )
     case e: JsonParseException =>
       Map("message" -> e.getOriginalMessage)
     case e: WebApplicationException =>

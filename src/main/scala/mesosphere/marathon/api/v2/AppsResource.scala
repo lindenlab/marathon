@@ -37,10 +37,10 @@ class AppsResource @Inject() (
             @QueryParam("embed") embed: String) = {
     val apps = if (cmd != null || id != null) search(cmd, id) else service.listApps()
     if (embed == EmbedTasks) {
-      Map("apps" -> apps.map(_.withTasks(taskTracker)))
+      Map("apps" -> apps.map(_.withTasksAndDeployments(service, taskTracker)))
     }
     else {
-      Map("apps" -> apps.map(_.withTaskCounts(taskTracker)))
+      Map("apps" -> apps.map(_.withTaskCountsAndDeployments(service, taskTracker)))
     }
   }
 
@@ -62,11 +62,11 @@ class AppsResource @Inject() (
   def show(@PathParam("id") id: String): Response = {
     def transitiveApps(gid: PathId) = {
       val apps = result(groupManager.group(gid)).map(group => group.transitiveApps).getOrElse(Nil)
-      val withTasks = apps.map(_.withTasks(taskTracker))
+      val withTasks = apps.map(_.withTasksAndDeployments(service, taskTracker))
       ok(Map("*" -> withTasks))
     }
     def app() = service.getApp(id.toRootPath) match {
-      case Some(app) => ok(Map("app" -> app.withTasks(taskTracker)))
+      case Some(app) => ok(Map("app" -> app.withTasksAndDeployments(service, taskTracker)))
       case None      => unknownApp(id.toRootPath)
     }
     id match {
@@ -82,8 +82,9 @@ class AppsResource @Inject() (
               @PathParam("id") id: String,
               @DefaultValue("false")@QueryParam("force") force: Boolean,
               appUpdate: AppUpdate): Response = {
-
-    val appId = appUpdate.id.map(_.canonicalPath(id.toRootPath)).getOrElse(id.toRootPath)
+    // prefer the id from the AppUpdate over that in the UI
+    val appId = appUpdate.id.map(_.canonicalPath()).getOrElse(id.toRootPath)
+    // TODO error if they're not the same?
     val updateWithId = appUpdate.copy(id = Some(appId))
 
     requireValid(checkUpdate(updateWithId, needsId = false))
@@ -126,12 +127,17 @@ class AppsResource @Inject() (
   @Path("""{id:.+}""")
   @Timed
   def delete(@Context req: HttpServletRequest,
-             @DefaultValue("false")@QueryParam("force") force: Boolean,
+             @DefaultValue("true")@QueryParam("force") force: Boolean,
              @PathParam("id") id: String): Response = {
     val appId = id.toRootPath
-    maybePostEvent(req, AppDefinition(id = appId))
-    val deployment = result(groupManager.update(appId.parent, _.removeApplication(appId), force = force))
-    deploymentResult(deployment)
+    service.getApp(appId) match {
+      case Some(app) =>
+        maybePostEvent(req, AppDefinition(id = appId))
+        val deployment = result(groupManager.update(appId.parent, _.removeApplication(appId), force = force))
+        deploymentResult(deployment)
+
+      case None => unknownApp(appId)
+    }
   }
 
   @Path("{appId:.+}/tasks")
@@ -149,8 +155,14 @@ class AppsResource @Inject() (
       b.toLowerCase contains a.toLowerCase
 
     service.listApps().filter { app =>
-      val appMatchesCmd = cmd != null && cmd.nonEmpty && isPrefix(cmd, app.cmd)
-      val appMatchesId = id != null && id.nonEmpty && isPrefix(id, app.id.toString)
+      val appMatchesCmd =
+        cmd != null &&
+          cmd.nonEmpty &&
+          app.cmd.map(isPrefix(cmd, _)).getOrElse(false)
+
+      val appMatchesId =
+        id != null &&
+          id.nonEmpty && isPrefix(id, app.id.toString)
 
       appMatchesCmd || appMatchesId
     }

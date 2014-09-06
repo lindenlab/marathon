@@ -63,9 +63,9 @@ class TaskTrackerTest extends MarathonSpec {
     )
   }
 
-  def shouldContainTaskStatus(task: MarathonTask, taskStatus: TaskStatus) {
+  def shouldHaveTaskStatus(task: MarathonTask, taskStatus: TaskStatus) {
     assert(
-      task.getStatusesList.contains(taskStatus), s"Should contain task status ${taskStatus.getState.toString}"
+      task.getStatus == taskStatus, s"Should have task status ${taskStatus.getState.toString}"
     )
   }
 
@@ -117,9 +117,9 @@ class TaskTrackerTest extends MarathonSpec {
 
     val testAppTasks = taskTracker.fetchApp(TEST_APP_NAME).tasks
 
-    shouldContainTask(testAppTasks, task1)
-    shouldContainTask(testAppTasks, task2)
-    shouldContainTask(testAppTasks, task3)
+    shouldContainTask(testAppTasks.values.toSet, task1)
+    shouldContainTask(testAppTasks.values.toSet, task2)
+    shouldContainTask(testAppTasks.values.toSet, task3)
     assert(testAppTasks.size == 3)
   }
 
@@ -140,7 +140,7 @@ class TaskTrackerTest extends MarathonSpec {
 
     shouldContainTask(taskTracker.get(TEST_APP_NAME), sampleTask)
     stateShouldContainKey(state, sampleTaskKey)
-    taskTracker.get(TEST_APP_NAME).foreach(task => shouldContainTaskStatus(task, startingTaskStatus))
+    taskTracker.get(TEST_APP_NAME).foreach(task => shouldHaveTaskStatus(task, startingTaskStatus))
 
     // TASK RUNNING
     val runningTaskStatus: TaskStatus = makeTaskStatus(TEST_TASK_ID, TaskState.TASK_RUNNING)
@@ -149,7 +149,7 @@ class TaskTrackerTest extends MarathonSpec {
 
     shouldContainTask(taskTracker.get(TEST_APP_NAME), sampleTask)
     stateShouldContainKey(state, sampleTaskKey)
-    taskTracker.get(TEST_APP_NAME).foreach(task => shouldContainTaskStatus(task, runningTaskStatus))
+    taskTracker.get(TEST_APP_NAME).foreach(task => shouldHaveTaskStatus(task, runningTaskStatus))
 
     // TASK TERMINATED
     val finishedTaskStatus = makeTaskStatus(TEST_TASK_ID, TaskState.TASK_FINISHED)
@@ -216,20 +216,20 @@ class TaskTrackerTest extends MarathonSpec {
 
     val app1Tasks = taskTracker.fetchApp(appName1).tasks
 
-    shouldContainTask(app1Tasks, task1)
-    shouldContainTask(app1Tasks, task2)
+    shouldContainTask(app1Tasks.values.toSet, task1)
+    shouldContainTask(app1Tasks.values.toSet, task2)
     assert(app1Tasks.size == 2, "Incorrect number of tasks")
 
     val app2Tasks = taskTracker.fetchApp(appName2).tasks
 
-    shouldContainTask(app2Tasks, task3)
+    shouldContainTask(app2Tasks.values.toSet, task3)
     assert(app2Tasks.size == 1, "Incorrect number of tasks")
 
     val app3Tasks = taskTracker.fetchApp(appName3).tasks
 
-    shouldContainTask(app3Tasks, task4)
-    shouldContainTask(app3Tasks, task5)
-    shouldContainTask(app3Tasks, task6)
+    shouldContainTask(app3Tasks.values.toSet, task4)
+    shouldContainTask(app3Tasks.values.toSet, task5)
+    shouldContainTask(app3Tasks.values.toSet, task6)
     assert(app3Tasks.size == 3, "Incorrect number of tasks")
   }
 

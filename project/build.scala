@@ -60,7 +60,8 @@ object MarathonBuild extends Build {
         "commons-beanutils-1.7.0.jar",
         "stax-api-1.0.1.jar",
         "commons-beanutils-core-1.8.0.jar",
-        "servlet-api-2.5.jar"
+        "servlet-api-2.5.jar",
+        "jsp-api-2.1.jar"
       )
       cp filter { x => exclude(x.data.getName) }
     }
@@ -115,7 +116,8 @@ object Dependencies {
     jerseyMultiPart % "compile",
     uuidGenerator % "compile",
     jGraphT % "compile",
-    hadoopClient % "compile",
+    hadoopHdfs % "compile",
+    hadoopCommon % "compile",
     beanUtils % "compile",
 
     // test
@@ -149,6 +151,9 @@ object Dependency {
     val ScalaTest = "2.1.7"
   }
 
+  val excludeMortbayJetty = ExclusionRule(organization = "org.mortbay.jetty")
+  val excludeJavaxServlet = ExclusionRule(organization = "javax.servlet")
+
   val akkaActor = "com.typesafe.akka" %% "akka-actor" % V.Akka
   val akkaSlf4j = "com.typesafe.akka" %% "akka-slf4j" % V.Akka
   val sprayClient = "io.spray" % "spray-client" % V.Spray
@@ -166,7 +171,8 @@ object Dependency {
   val twitterZkClient = "com.twitter.common.zookeeper" % "client" % V.TwitterZKClient
   val uuidGenerator = "com.fasterxml.uuid" % "java-uuid-generator" % V.UUIDGenerator
   val jGraphT = "org.javabits.jgrapht" % "jgrapht-core" % V.JGraphT
-  val hadoopClient =  "org.apache.hadoop" % "hadoop-client" % V.Hadoop
+  val hadoopHdfs = "org.apache.hadoop" % "hadoop-hdfs" % V.Hadoop excludeAll(excludeMortbayJetty, excludeJavaxServlet)
+  val hadoopCommon = "org.apache.hadoop" % "hadoop-common" % V.Hadoop excludeAll(excludeMortbayJetty, excludeJavaxServlet)
   val beanUtils = "commons-beanutils" % "commons-beanutils" % "1.9.2"
 
   object Test {

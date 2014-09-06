@@ -1,18 +1,16 @@
-# Marathon [![Build Status](https://travis-ci.org/mesosphere/marathon.png?branch=master)](https://travis-ci.org/mesosphere/marathon)
-
-__Detailed documentation for Mesos + Marathon available via the [Mesosphere Website](http://mesosphere.io/docs/)__
+# [Marathon](https://mesosphere.github.io/marathon/) [![Build Status](https://travis-ci.org/mesosphere/marathon.png?branch=master)](https://travis-ci.org/mesosphere/marathon)
 
 Marathon is an [Apache Mesos][Mesos] framework for long-running applications. Given that
 you have Mesos running as the kernel for your datacenter, Marathon is the
 [`init`][init] or [`upstart`][upstart] daemon.
 
 Marathon provides a
-[REST API](https://github.com/mesosphere/marathon/blob/master/REST.md) for
+[REST API](https://mesosphere.github.io/marathon/docs/rest-api.html) for
 starting, stopping, and scaling applications. Marathon is written in Scala and
-can run in highly-available mode by running multiple copies of Marathon. The
+can run in highly-available mode by running multiple copies. The
 state of running tasks gets stored in the Mesos state abstraction.
 
-Try Marathon now on [Elastic Mesos](http://elastic.mesosphere.io) and learn how
+Try Marathon now on AWS with [Elastic Mesos](http://elastic.mesosphere.io) or with [Mesosphere for Google Compute Platform](http://google.mesosphere.io) and learn how
 to use it in Mesosphere's interactive
 [Marathon tutorial](http://mesosphere.io/learn/run-services-with-marathon/)
 that can be personalized for your cluster.
@@ -22,106 +20,48 @@ Chronos or [Storm][Storm] with it to ensure they survive machine failures.
 It can launch anything that can be launched in a standard shell. In fact, you
 can even start other Marathon instances via Marathon.
 
+Using Marathon versions 0.7.0+ and Mesos 0.20.0+, you can [deploy, run and scale Docker containers](https://mesosphere.github.io/marathon/docs/native-docker.html) with ease.
+
+Documentation for installing and configuring the full Mesosphere stack with Mesos + Marathon is
+available on the [Mesosphere website](http://mesosphere.io/docs/).
+
 ## Features
 
 * *HA* -- run any number of Marathon schedulers, but only one gets elected as
     leader; if you access a non-leader, your request gets proxied to the
     current leader
-* *[Constraints](https://github.com/mesosphere/marathon/wiki/Constraints)* - e.g., only one instance of an application per rack, node, etc.
-* *[Service Discovery &amp; Load Balancing](https://github.com/mesosphere/marathon/wiki/Service-Discovery-&-Load-Balancing)* via HAProxy or the events API (see below).
-* *[Health Checks](https://github.com/mesosphere/marathon/wiki/Health-Checks)*: check your application's health via HTTP or TCP checks.
-* *[Event Subscription](https://github.com/mesosphere/marathon/wiki/Event-Bus)* lets you supply an HTTP endpoint to receive notifications, for example to integrate with an external load balancer.
+* *[Constraints](https://mesosphere.github.io/marathon/docs/constraints.html)* - e.g., only one instance of an application per rack, node, etc.
+* *[Service Discovery &amp; Load Balancing](https://mesosphere.github.io/marathon/docs/service-discovery-load-balancing.html)* via HAProxy or the events API (see below).
+* *[Health Checks](https://mesosphere.github.io/marathon/docs/health-checks.html)*: check your application's health via HTTP or TCP checks.
+* *[Event Subscription](https://mesosphere.github.io/marathon/docs/rest-api.html#event-subscriptions)* lets you supply an HTTP endpoint to receive notifications, for example to integrate with an external load balancer.
 * *Web UI*
-* *JSON/REST API* for easy integration and scriptability
+* *[JSON/REST API](https://mesosphere.github.io/marathon/docs/rest-api.html)* for easy integration and scriptability
 * *Basic Auth* and *SSL*
 * *Metrics*: available at `/metrics` in JSON format
 
-## Overview
-
-The graphic shown below depicts how Marathon runs on top of Mesos together with
-the Chronos framework. In this case, Marathon is the first framework to be
-launched and it runs alongside Mesos. In other words, the Marathon scheduler
-processes were started outside of Mesos using `init`, `upstart`, or a similar
-tool. Marathon launches two instances of the Chronos scheduler as a Marathon
-task. If either of the two Chronos tasks dies -- due to underlying slave
-crashes, power loss in the cluster, etc. -- Marathon will re-start a Chronos
-instance on another slave. This approach ensures that two Chronos processes are
-always running.
-
-Since Chronos itself is a framework and receives Mesos resource offers, it can
-start tasks on Mesos. In the use case shown below, Chronos is currently running
-two tasks. One dumps a production MySQL database to S3, while another sends an
-email newsletter to all customers via Rake. Meanwhile, Marathon also runs the
-other applications that make up our website, such as JBoss servers, a Jetty
-service, Sinatra, Rails, and so on.
-
-![architecture](https://raw.github.com/mesosphere/marathon/master/docs/img/architecture.png "Marathon on Mesos")
-
-The next graphic shows a more application-centric view of Marathon running
-three applications, each with a different number of tasks: Search (1), Jetty
-(3), and Rails (5).
-
-![Marathon1](https://raw.github.com/mesosphere/marathon/master/docs/img/marathon1.png "Initial Marathon")
-
-As the website gains traction and the user base grows, we decide to scale-out
-the search service and our Rails-based application. This is done via a
-REST call to the Marathon API to add more tasks. Marathon will take care of
-placing the new tasks on machines with spare capacity, honoring the
-constraints we previously set.
-
-![Marathon2](https://raw.github.com/mesosphere/marathon/master/docs/img/marathon2.png "Marathon scale-out")
-
-Imagine that one of the datacenter workers trips over a power cord and a server
-gets unplugged. No problem for Marathon, it moves the affected search service
-and Rails tasks to a node that has spare capacity. The engineer may be
-temporarily embarrased, but Marathon saves him from having to explain a
-difficult situation!
-
-![Marathon3](https://raw.github.com/mesosphere/marathon/master/docs/img/marathon3.png "Marathon recovering an application")
-
 ## Setting Up And Running Marathon
-
-### Requirements
-
-* [Mesos][Mesos] 0.15.0+
-* [Zookeeper][Zookeeper]
-* JDK 1.6+
-* Scala 2.10+
-* sbt 0.13.5
 
 ### Installation
 
-1.  Install [Mesos][Mesos]. One easy way is via your system's package manager.
-    Current builds for major Linux distributions and Mac OS X are available
-    from on the Mesosphere [downloads page](http://mesosphere.io/downloads/).
+#### Install Mesos
 
-    If building from source, see the
-    Mesos [Getting Started](http://mesos.apache.org/gettingstarted/) page or the
-    [Mesosphere tutorial](http://mesosphere.io/2013/08/01/distributed-fault-tolerant-framework-apache-mesos/)
-    for details. Running `make install` will install Mesos in `/usr/local` in
-    the same way as these packages do.
+Marathon requires Mesos installed on the same machine in order to use a shared library.
+One easy way is via your system's package manager.
+Current builds for major Linux distributions are available
+from on the Mesosphere [downloads page](http://mesosphere.io/downloads/)
+or from Mesosphere's [repositories](http://mesosphere.io/2014/07/17/mesosphere-package-repositories/).
 
-1.  Download and unpack the latest release.
+If building from source, see the
+Mesos [Getting Started](http://mesos.apache.org/gettingstarted/) page or the
+[Mesosphere tutorial](http://mesosphere.io/2013/08/01/distributed-fault-tolerant-framework-apache-mesos/)
+for details. Running `make install` will install Mesos in `/usr/local` in
+the same way as these packages do.
 
-    **For Mesos 0.19.0:**
+#### Install Marathon
 
-        curl -O http://downloads.mesosphere.io/marathon/marathon-0.6.1/marathon-0.6.1.tgz
-        tar xzf marathon-0.6.1.tgz
+Full instructions on how to install prepackaged releases are available [in the Marathon docs](https://mesosphere.github.io/marathon/docs/). Alternatively, you can build Marathon from source.
 
-    **For Mesos 0.17.0 to 0.18.2:**
-
-        curl -O http://downloads.mesosphere.io/marathon/marathon-0.5.1/marathon-0.5.1.tgz
-        tar xzf marathon-0.5.1.tgz
-
-    **For Mesos 0.16.0 and earlier:**
-
-        curl -O http://downloads.mesosphere.io/marathon/marathon-0.5.1_mesos-0.16.0/marathon-0.5.1_mesos-0.16.0.tgz
-        tar xzf marathon-0.5.1_mesos-0.16.0.tgz
-
-    SHA-256 checksums are available by appending `.sha256` to the URLs.
-
-
-#### Building From Source
+##### Building from Source
 
 1.  To build Marathon from source, check out this repo and use sbt to build a JAR:
 
@@ -133,20 +73,6 @@ difficult situation!
     [executable JAR](http://mesosphere.io/2013/12/07/executable-jars/)
     (optional).
 
-
-### Running in Production Mode
-
-To launch Marathon in *production mode*, you need to have both
-[ZooKeeper][ZooKeeper] and Mesos running. The following command launches
-Marathon on Mesos in *production mode*. Point your web browser to
-`localhost:8080` and you should see the Marathon UI.
-
-    ./bin/start --master zk://zk1.foo.bar:2181,zk2.foo.bar:2181/mesos --zk zk://zk1.foo.bar:2181,zk2.foo.bar:2181/marathon
-
-Marathon uses `--master` to find the Mesos masters, and `--zk` to find ZooKeepers
-for storing state. They are separate options because Mesos masters can be
-discovered in other ways as well.
-
 ### Running in Development Mode
 
 Mesos local mode allows you to run Marathon without launching a full Mesos
@@ -156,55 +82,12 @@ command launches Marathon on Mesos in *local mode*. Point your web browser to
 `http://localhost:8080`, and you should see the Marathon UI.
 
     ./bin/start --master local --zk zk://localhost:2181/marathon
-    
-### Running with a standalone Mesos master
 
-The released version 0.19.0 of Mesos does not allow frameworks to launch an in-process master. This will be fixed in the next release. In the meantime, you can still run Marathon locally if you launch a master in a separate console and either point Marathon directly at the master itself or at the same Zookeeper (if you specified this when launching the master):
-
-    ./bin/start --master zk://localhost:2181/mesos --zk zk://localhost:2181/marathon
-    ./bin/start --master localhost:5050 --zk zk://localhost:2181/marathon
-
-### Command Line Options
-
-The following options can influence how Marathon works:
-
-* `--master`: The URL of the Mesos master. The format is a comma-delimited list of
-    of hosts like `zk://host1:port,host2:port/mesos`. Pay particular attention to the
-    leading `zk://` and trailing `/mesos`!
-* `--failover_timeout`: The failover_timeout for mesos in seconds (default: 1 week)
-* `--ha`: Runs Marathon in HA mode with leader election. Allows starting an arbitrary
-    number of other Marathons but all need to be started in HA mode. This mode
-    requires a running ZooKeeper. See `--master`.
-* `--checkpoint`: Enable checkpointing of tasks. Requires checkpointing enabled on
-    slaves. Allows tasks to continue running during mesos-slave restarts and upgrades.
-* `--local_port_min`: Min port number to use when assigning ports to apps.
-* `--local_port_max`: Max port number to use when assigning ports to apps.
-* `--executor`: Executor to use when none is specified.
-* `--hostname`: The advertised hostname stored in ZooKeeper so another standby host
-    can redirect to the elected leader.
-* `--mesos_role`: Mesos role for this framework.
-* `--task_launch_timeout`: Time, in milliseconds, to wait for a task to enter the
-    TASK_RUNNING state before killing it.
-* `--reconciliation_initial_delay`: This is the length of time, in milliseconds, before
-    Marathon begins to periodically perform task reconciliation operations.
-* `--mesos_user`: Mesos user for this framework. Defaults to current user.
-
-### Configuration Options
-
-* `MESOS_NATIVE_JAVA_LIBRARY`: `bin/start` searches the common installation paths,
-    `/usr/lib` and `/usr/local/lib`, for the Mesos native library. If the
-    library lives elsewhere in your configuration, set the environment variable
-    `MESOS_NATIVE_JAVA_LIBRARY` to its full path.
-
-  For example:
-
-      MESOS_NATIVE_JAVA_LIBRARY=/Users/bob/libmesos.dylib ./bin/start --master local --zk zk://localhost:2181/marathon
-
-Run `./bin/start --help` for a full list of configuration options.
+For more information on how to run Marathon in production and configuration options, see [the Marathon docs](https://mesosphere.github.io/marathon/docs/).
 
 ## REST API Usage
 
-The full [API documentation](REST.md) shows details about everything the
+The full [API documentation](https://mesosphere.github.io/marathon/docs/rest-api.html) shows details about everything the
 Marathon API can do.
 
 ### Example using the V2 API
@@ -253,6 +136,7 @@ Marathon API can do.
 * [Guidewire](http://www.guidewire.com/)
 * [OpenTable](http://www.opentable.com/)
 * [PayPal](https://www.paypal.com)
+* [Sailthru](http://www.sailthru.com/)
 * [Viadeo](http://www.viadeo.com)
 
 Not in the list? Open a pull request and add yourself!

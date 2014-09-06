@@ -1,13 +1,13 @@
 package mesosphere.marathon.upgrade
 
 import akka.actor.{ ActorSystem, Props }
-import akka.testkit.{ TestActorRef, TestKit, TestProbe }
+import akka.testkit.{ ImplicitSender, TestActorRef, TestKit, TestProbe }
 import akka.util.Timeout
-import mesosphere.marathon.event.MesosStatusUpdateEvent
+import mesosphere.marathon.event.{ DeploymentStatus, MesosStatusUpdateEvent }
 import mesosphere.marathon.io.storage.StorageProvider
 import mesosphere.marathon.state._
 import mesosphere.marathon.tasks.{ MarathonTasks, TaskQueue, TaskTracker }
-import mesosphere.marathon.upgrade.DeploymentActor.Finished
+import mesosphere.marathon.upgrade.DeploymentActor.{ DeploymentStepInfo, RetrieveCurrentStep, Finished }
 import mesosphere.marathon.upgrade.DeploymentManager.DeploymentFinished
 import mesosphere.marathon.{ MarathonSpec, SchedulerActions }
 import mesosphere.mesos.protos.Implicits._
@@ -21,7 +21,6 @@ import org.mockito.stubbing.Answer
 import org.scalatest.mock.MockitoSugar
 import org.scalatest.{ BeforeAndAfterAll, Matchers }
 
-import scala.collection.mutable
 import scala.concurrent.Future
 import scala.concurrent.duration._
 
@@ -30,7 +29,8 @@ class DeploymentActorTest
     with MarathonSpec
     with Matchers
     with BeforeAndAfterAll
-    with MockitoSugar {
+    with MockitoSugar
+    with ImplicitSender {
 
   var repo: AppRepository = _
   var tracker: TaskTracker = _
@@ -57,14 +57,14 @@ class DeploymentActorTest
   test("Deploy") {
     val managerProbe = TestProbe()
     val receiverProbe = TestProbe()
-    val app1 = AppDefinition(id = PathId("app1"), cmd = "cmd", instances = 2, version = Timestamp(0))
-    val app2 = AppDefinition(id = PathId("app2"), cmd = "cmd", instances = 1, version = Timestamp(0))
-    val app3 = AppDefinition(id = PathId("app3"), cmd = "cmd", instances = 1, version = Timestamp(0))
-    val app4 = AppDefinition(id = PathId("app4"), cmd = "cmd", version = Timestamp(0))
+    val app1 = AppDefinition(id = PathId("app1"), cmd = Some("cmd"), instances = 2, version = Timestamp(0))
+    val app2 = AppDefinition(id = PathId("app2"), cmd = Some("cmd"), instances = 1, version = Timestamp(0))
+    val app3 = AppDefinition(id = PathId("app3"), cmd = Some("cmd"), instances = 1, version = Timestamp(0))
+    val app4 = AppDefinition(id = PathId("app4"), cmd = Some("cmd"), version = Timestamp(0))
     val origGroup = Group(PathId("/foo/bar"), Set(app1, app2, app4))
 
     val app1New = app1.copy(instances = 1, version = Timestamp(1000))
-    val app2New = app2.copy(instances = 2, cmd = "otherCmd", version = Timestamp(1000))
+    val app2New = app2.copy(instances = 2, cmd = Some("otherCmd"), version = Timestamp(1000))
 
     val targetGroup = Group(PathId("/foo/bar"), Set(app1New, app2New, app3))
 
@@ -77,10 +77,10 @@ class DeploymentActorTest
 
     val plan = DeploymentPlan(origGroup, targetGroup)
 
-    when(tracker.get(app1.id)).thenReturn(mutable.Set(task1_1, task1_2))
-    when(tracker.get(app2.id)).thenReturn(mutable.Set(task2_1))
-    when(tracker.get(app3.id)).thenReturn(mutable.Set(task3_1))
-    when(tracker.get(app4.id)).thenReturn(mutable.Set(task4_1))
+    when(tracker.get(app1.id)).thenReturn(Set(task1_1, task1_2))
+    when(tracker.get(app2.id)).thenReturn(Set(task2_1))
+    when(tracker.get(app3.id)).thenReturn(Set(task3_1))
+    when(tracker.get(app4.id)).thenReturn(Set(task4_1))
 
     // the AppDefinition is never used, so it does not mater which one we return
     when(repo.store(any())).thenReturn(Future.successful(AppDefinition()))
@@ -146,17 +146,17 @@ class DeploymentActorTest
   test("Restart app") {
     val managerProbe = TestProbe()
     val receiverProbe = TestProbe()
-    val app = AppDefinition(id = PathId("app1"), cmd = "cmd", instances = 2, upgradeStrategy = UpgradeStrategy(0.5), version = Timestamp(0))
+    val app = AppDefinition(id = PathId("app1"), cmd = Some("cmd"), instances = 2, upgradeStrategy = UpgradeStrategy(0.5), version = Timestamp(0))
     val origGroup = Group(PathId("/foo/bar"), Set(app))
 
-    val appNew = app.copy(cmd = "cmd new", version = Timestamp(1000))
+    val appNew = app.copy(cmd = Some("cmd new"), version = Timestamp(1000))
 
     val targetGroup = Group(PathId("/foo/bar"), Set(appNew))
 
     val task1_1 = MarathonTasks.makeTask("task1_1", "", Nil, Nil, app.version).toBuilder.setStartedAt(0).build()
     val task1_2 = MarathonTasks.makeTask("task1_2", "", Nil, Nil, app.version).toBuilder.setStartedAt(1000).build()
 
-    when(tracker.get(app.id)).thenReturn(mutable.Set(task1_1, task1_2))
+    when(tracker.get(app.id)).thenReturn(Set(task1_1, task1_2))
 
     val plan = DeploymentPlan("foo", origGroup, targetGroup, List(DeploymentStep(List(RestartApplication(appNew, 1, 1)))), Timestamp.now())
 
@@ -196,5 +196,48 @@ class DeploymentActorTest
 
     verify(driver).killTask(TaskID(task1_2.getId))
     verify(queue).add(appNew)
+  }
+
+  test("Retrieve running deployments") {
+    val managerProbe = TestProbe()
+    val receiverProbe = TestProbe()
+    val eventProbe = TestProbe()
+
+    val app = AppDefinition(id = PathId("app1"), cmd = Some("cmd"), instances = 2, version = Timestamp(0))
+    val origGroup = Group(PathId("/foo/bar"), Set())
+
+    val targetGroup = Group(PathId("/foo/bar"), Set(app))
+
+    val plan = DeploymentPlan(origGroup, targetGroup)
+    val firstStep = plan.steps.head
+
+    when(repo.store(app)).thenReturn(Future.successful(app))
+
+    system.eventStream.subscribe(eventProbe.ref, classOf[DeploymentStatus])
+
+    val deploymentActor = TestActorRef(
+      Props(
+        classOf[DeploymentActor],
+        managerProbe.ref,
+        receiverProbe.ref,
+        repo,
+        driver,
+        scheduler,
+        plan,
+        tracker,
+        queue,
+        storage,
+        system.eventStream
+      )
+    )
+
+    eventProbe.expectMsgPF() {
+      case DeploymentStatus(`plan`, `firstStep`, _, _) => true
+    }
+
+    deploymentActor ! RetrieveCurrentStep
+
+    expectMsg(DeploymentStepInfo(firstStep, 1))
+    deploymentActor.stop()
   }
 }

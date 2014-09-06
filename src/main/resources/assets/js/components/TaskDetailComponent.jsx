@@ -3,31 +3,41 @@
 define([
   "React",
   "mixins/BackboneMixin",
+  "constants/States",
   "models/Task",
+  "jsx!components/Marathon",
   "jsx!components/TimeFieldComponent",
   "jsx!components/TaskHealthComponent"
-], function(React, BackboneMixin, Task,
+], function(React, BackboneMixin, States, Task, Marathon,
   TimeFieldComponent, TaskHealthComponent) {
+  "use strict";
+
 
   return React.createClass({
     displayName: "TaskDetailComponent",
+
     mixins: [BackboneMixin],
+
     propTypes: {
+      fetchState: React.PropTypes.number.isRequired,
       hasHealth: React.PropTypes.bool,
       onShowTaskList: React.PropTypes.func.isRequired,
       task: React.PropTypes.object.isRequired
     },
+
     getResource: function() {
       return this.props.task;
     },
+
     handleShowTaskList: function (event) {
       event.preventDefault();
       this.props.onShowTaskList();
     },
+
     render: function() {
       var task = this.props.task;
       var hasHealth = !!this.props.hasHealth;
-      var hasError = this.props.fetchState === this.props.STATES.STATE_ERROR || task.collection == null;
+      var hasError = this.props.fetchState === States.STATE_ERROR || task.collection == null;
       var taskHealth = task.getHealth();
       var healthClassSet;
       var timeNodes;
@@ -49,6 +59,8 @@ define([
           }
         ];
         timeFields = timeNodes.map(function(timeNode, index) {
+
+          /* jshint trailing:false, quotmark:false, newcap:false */
           return (
             <TimeFieldComponent
               key={index}
@@ -58,6 +70,7 @@ define([
         });
       }
 
+      /* jshint trailing:false, quotmark:false, newcap:false */
       return (
         <div>
           <ol className="breadcrumb">

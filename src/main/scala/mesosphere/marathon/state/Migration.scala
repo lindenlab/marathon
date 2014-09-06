@@ -7,13 +7,14 @@ import mesosphere.marathon.Protos.StorageVersion
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state.StorageVersions._
 import mesosphere.marathon.tasks.TaskTracker
-import mesosphere.marathon.tasks.TaskTracker.App
+import mesosphere.marathon.tasks.TaskTracker.{ InternalApp, App }
 import mesosphere.marathon.{ BuildInfo, MarathonConf, StorageException }
 import mesosphere.util.BackToTheFuture.futureToFutureOption
 import mesosphere.util.ThreadPoolContext.context
 import mesosphere.util.{ BackToTheFuture, Logging }
 import org.apache.mesos.state.{ State, Variable }
 
+import scala.collection.JavaConverters._
 import scala.concurrent.duration.Duration
 import scala.concurrent.{ Await, Future }
 import scala.util.{ Failure, Success, Try }
@@ -35,7 +36,7 @@ class Migration @Inject() (
     StorageVersions(0, 5, 0) -> { () => changeApps(app => app.copy(id = app.id.toString.toLowerCase.replaceAll("_", "-").toRootPath)) },
     StorageVersions(0, 7, 0) -> { () =>
       {
-        changeTasks(app => new App(app.appName.canonicalPath(), app.tasks, app.shutdown))
+        changeTasks(app => new InternalApp(app.appName.canonicalPath(), app.tasks, app.shutdown))
         changeApps(app => app.copy(id = app.id.canonicalPath()))
         putAppsIntoGroup()
       }
@@ -94,22 +95,27 @@ class Migration @Inject() (
     }
   }
 
-  private def changeTasks(fn: App => App): Future[Any] = {
+  private def changeTasks(fn: InternalApp => InternalApp): Future[Any] = {
     val taskTracker = new TaskTracker(state, config)
-    def fetchApp(appId: PathId): Option[App] = {
+    def fetchApp(appId: PathId): Option[InternalApp] = {
       val bytes = state.fetch("tasks:" + appId.safePath).get().value
       if (bytes.length > 0) {
         val source = new ObjectInputStream(new ByteArrayInputStream(bytes))
-        val fetchedTasks = taskTracker.legacyDeserialize(appId, source)
-        Some(new App(appId, fetchedTasks, false))
+        val fetchedTasks = taskTracker.legacyDeserialize(appId, source).map {
+          case (key, task) =>
+            val builder = task.toBuilder.clearOBSOLETEStatuses()
+            task.getOBSOLETEStatusesList.asScala.lastOption.foreach(builder.setStatus)
+            key -> builder.build()
+        }
+        Some(new InternalApp(appId, fetchedTasks, false))
       }
       else None
     }
-    def store(app: App): Future[Seq[Variable]] = {
+    def store(app: InternalApp): Future[Seq[Variable]] = {
       val oldVar = state.fetch("tasks:" + app.appName.safePath).get()
       val bytes = new ByteArrayOutputStream()
       val output = new ObjectOutputStream(bytes)
-      Future.sequence(app.tasks.toSeq.map(taskTracker.store(app.appName, _)))
+      Future.sequence(app.tasks.values.toSeq.map(taskTracker.store(app.appName, _)))
     }
     appRepo.allPathIds().flatMap { apps =>
       val res = apps.flatMap(fetchApp).map{ app => store(fn(app)) }

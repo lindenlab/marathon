@@ -3,6 +3,8 @@
 define([
   "React"
 ], function(React) {
+  "use strict";
+
   function noop() {}
 
   return React.createClass({
@@ -28,6 +30,7 @@ define([
         );
       }, this);
 
+      /* jshint trailing:false, quotmark:false, newcap:false */
       return (
         <ul className="nav nav-tabs">
           {tabs}

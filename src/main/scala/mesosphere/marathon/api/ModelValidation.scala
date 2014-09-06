@@ -1,12 +1,13 @@
 package mesosphere.marathon.api
 
+import java.lang.{ Double => JDouble }
 import java.net.{ HttpURLConnection, URL }
 import javax.validation.ConstraintViolation
 import scala.reflect.ClassTag
 import scala.util.{ Failure, Success, Try }
 
 import mesosphere.marathon.api.v2.{ AppUpdate, GroupUpdate }
-import mesosphere.marathon.state.{ AppDefinition, Group, PathId, UpgradeStrategy }
+import mesosphere.marathon.state._
 
 /**
   * Specific validation helper for specific model classes.
@@ -26,7 +27,13 @@ trait ModelValidation extends BeanValidation {
   }
 
   def checkGroupUpdate(group: GroupUpdate, needsId: Boolean, path: String = "", parent: PathId = PathId.empty): Iterable[ConstraintViolation[GroupUpdate]] = {
-    if ((group.version orElse group.scaleBy).isDefined) Nil else {
+    if ((group.version orElse group.scaleBy).isDefined) {
+      validate(group,
+        defined(group, group.version, "version", (b: GroupUpdate, t: Timestamp, i: String) => hasOnlyOneDefinedOption(b, t, i), mandatory = false),
+        defined(group, group.scaleBy, "scaleBy", (b: GroupUpdate, t: JDouble, i: String) => hasOnlyOneDefinedOption(b, t, i), mandatory = false)
+      )
+    }
+    else {
       val base = group.id.map(_.canonicalPath(parent)).getOrElse(parent)
       validate(group,
         defined(group, group.id, "id", (b: GroupUpdate, p: PathId, i: String) => idErrors(b, group.groupId.canonicalPath(parent), p, i), mandatory = needsId),
@@ -38,8 +45,27 @@ trait ModelValidation extends BeanValidation {
     }
   }
 
+  private def hasOnlyOneDefinedOption[A <: Product, B](product: A, prop: B, path: String)(implicit ct: ClassTag[A]) = {
+    val definedOptionsCount = product.productIterator.count {
+      case Some(_) => true
+      case _       => false
+    }
+    isTrue(product, prop, path, "not allowed in conjunction with other properties", definedOptionsCount == 1)
+  }
+
   def noAppsAndGroups[T](t: T, path: String, apps: Set[AppDefinition], groups: Set[T])(implicit ct: ClassTag[T]) = {
-    isTrue(t, apps, path, "Groups can define apps xor groups but can not hold both!", !(apps.nonEmpty && groups.nonEmpty))
+    lazy val appIds = apps.map(_.id).mkString(", ")
+    lazy val groupIds = groups.collect {
+      case g: Group       => g.id
+      case g: GroupUpdate => g.id.getOrElse(PathId(path))
+    }.mkString(", ")
+
+    isTrue(
+      t,
+      apps,
+      path,
+      s"Groups may contain apps or groups but not both! Apps: [$appIds] Groups: [$groupIds]",
+      !(apps.nonEmpty && groups.nonEmpty))
   }
 
   def noCyclicDependencies(group: Group, path: String) = {

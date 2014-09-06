@@ -70,18 +70,20 @@ class TaskBuilder(app: AppDefinition,
     executor match {
       case CommandExecutor() =>
         builder.setCommand(TaskBuilder.commandInfo(app, ports))
+        for (c <- app.container) builder.setContainer(c.toProto)
 
       case PathExecutor(path) =>
         val executorId = f"marathon-${taskId.getValue}" // Fresh executor
-        val escaped = "'" + path + "'" // TODO: Really escape this.
-        val shell = f"chmod ug+rx $escaped && exec $escaped ${app.cmd}"
+        val executorPath = s"'$path'" // TODO: Really escape this.
+        val cmd = app.cmd orElse app.args.map(_ mkString " ") getOrElse ""
+        val shell = s"chmod ug+rx $executorPath && exec $executorPath $cmd"
         val command =
           TaskBuilder.commandInfo(app, ports).toBuilder.setValue(shell)
 
         val info = ExecutorInfo.newBuilder()
           .setExecutorId(ExecutorID.newBuilder().setValue(executorId))
           .setCommand(command)
-
+        for (c <- app.container) info.setContainer(c.toProto)
         builder.setExecutor(info)
         val binary = new ByteArrayOutputStream()
         mapper.writeValue(binary, app)
@@ -175,20 +177,26 @@ object TaskBuilder {
     val envMap = app.env ++ portsEnv(ports)
 
     val builder = CommandInfo.newBuilder()
-      .setValue(app.cmd)
       .setEnvironment(environment(envMap))
 
-    for (c <- app.container) {
-      val container = CommandInfo.ContainerInfo.newBuilder()
-        .setImage(c.image)
-        .addAllOptions(c.options.asJava)
-      builder.setContainer(container)
+    app.cmd match {
+      case Some(cmd) if cmd.nonEmpty =>
+        builder.setValue(cmd)
+      case _ =>
+        builder.setShell(false)
+    }
+
+    // args take precedence over command, if supplied
+    app.args.foreach { argv =>
+      builder.setShell(false)
+      builder.addAllArguments(argv.asJava)
     }
 
     if (app.uris != null) {
       val uriProtos = app.uris.map(uri => {
         CommandInfo.URI.newBuilder()
           .setValue(uri)
+          .setExtract(isExtract(uri))
           .build()
       })
       builder.addAllUris(uriProtos.asJava)
@@ -197,6 +205,22 @@ object TaskBuilder {
     app.user.foreach(builder.setUser)
 
     builder.build
+  }
+
+  private def isExtract(stringuri: String): Boolean = {
+    if (stringuri.endsWith(".tgz") ||
+      stringuri.endsWith(".tar.gz") ||
+      stringuri.endsWith(".tbz2") ||
+      stringuri.endsWith(".tar.bz2") ||
+      stringuri.endsWith(".txz") ||
+      stringuri.endsWith(".tar.xz") ||
+      stringuri.endsWith(".zip")) {
+      return true;
+    }
+    else {
+      return false;
+    }
+
   }
 
   def environment(vars: Map[String, String]) = {

@@ -3,6 +3,8 @@
 define([
   "React"
 ], function(React) {
+  "use strict";
+
   return React.createClass({
     propTypes: {
       isActive: React.PropTypes.bool,
@@ -28,6 +30,7 @@ define([
         "tab-pane": true
       });
 
+      /* jshint trailing:false, quotmark:false, newcap:false */
       return (
         <div className={classSet}>
           {this.props.children}
