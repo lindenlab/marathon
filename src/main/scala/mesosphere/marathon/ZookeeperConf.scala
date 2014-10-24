@@ -7,9 +7,10 @@ import scala.concurrent.duration._
 
 trait ZookeeperConf extends ScallopConf {
 
+  private val userAndPass = """[^/@]+"""
   private val hostAndPort = """[A-z0-9-.]+(?::\d+)?"""
   private val zkNode = """[^/]+"""
-  private val zkURLPattern = s"""^zk://($hostAndPort(?:,$hostAndPort)*)(/$zkNode(?:/$zkNode)*)$$""".r
+  private val zkURLPattern = s"""^zk://(?:$userAndPass@)?($hostAndPort(?:,$hostAndPort)*)(/$zkNode(?:/$zkNode)*)$$""".r
 
   @Deprecated
   lazy val zooKeeperHostString = opt[String]("zk_hosts",
@@ -39,9 +40,9 @@ trait ZookeeperConf extends ScallopConf {
   conflicts(zooKeeperPath, List(zooKeeperUrl))
   conflicts(zooKeeperUrl, List(zooKeeperHostString, zooKeeperPath))
 
-  def zooKeeperStatePath = "%s/state".format(zkPath)
-  def zooKeeperLeaderPath = "%s/leader".format(zkPath)
-  def zooKeeperServerSetPath = "%s/apps".format(zkPath)
+  def zooKeeperStatePath(): String = "%s/state".format(zkPath)
+  def zooKeeperLeaderPath(): String = "%s/leader".format(zkPath)
+  def zooKeeperServerSetPath(): String = "%s/apps".format(zkPath)
 
   def zooKeeperHostAddresses: Seq[InetSocketAddress] =
     for (s <- zkHosts.split(",")) yield {
@@ -50,7 +51,8 @@ trait ZookeeperConf extends ScallopConf {
       new InetSocketAddress(splits(0), splits(1).toInt)
     }
 
-  def zkURL = zooKeeperUrl.get.getOrElse(s"zk://${zooKeeperHostString()}${zooKeeperPath()}")
+  def zkURL(): String = zooKeeperUrl.get.getOrElse(s"zk://${zooKeeperHostString()}${zooKeeperPath()}")
+
   lazy val zkHosts = zkURL match { case zkURLPattern(server, _) => server }
   lazy val zkPath = zkURL match { case zkURLPattern(_, path) => path }
   lazy val zkTimeoutDuration = Duration(zooKeeperTimeout(), MILLISECONDS)

@@ -9,12 +9,16 @@ import javax.ws.rs.core.{ Context, MediaType, Response }
 import akka.event.EventStream
 import com.codahale.metrics.annotation.Timed
 import mesosphere.marathon.api.{ ModelValidation, RestResource }
+import mesosphere.marathon.api.v2.json.EnrichedTask
 import mesosphere.marathon.event.{ ApiPostEvent, EventModule }
 import mesosphere.marathon.health.HealthCheckManager
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state._
 import mesosphere.marathon.tasks.TaskTracker
+import mesosphere.marathon.upgrade.DeploymentPlan
 import mesosphere.marathon.{ MarathonConf, MarathonSchedulerService }
+
+import scala.collection.immutable.Seq
 
 @Path("v2/apps")
 @Consumes(Array(MediaType.APPLICATION_JSON))
@@ -24,22 +28,35 @@ class AppsResource @Inject() (
     service: MarathonSchedulerService,
     taskTracker: TaskTracker,
     healthCheckManager: HealthCheckManager,
+    taskFailureRepository: TaskFailureRepository,
     val config: MarathonConf,
     groupManager: GroupManager) extends RestResource with ModelValidation {
 
   val ListApps = """^((?:.+/)|)\*$""".r
   val EmbedTasks = "apps.tasks"
+  val EmbedTasksAndFailures = "apps.failures"
 
   @GET
   @Timed
   def index(@QueryParam("cmd") cmd: String,
             @QueryParam("id") id: String,
-            @QueryParam("embed") embed: String) = {
+            @QueryParam("embed") embed: String): Map[String, Iterable[AppDefinition]] = {
     val apps = if (cmd != null || id != null) search(cmd, id) else service.listApps()
     val runningDeployments = result(service.listRunningDeployments()).map(r => r._1)
     val mapped =
-      if (embed == EmbedTasks) apps.map(app => app.withTasksAndDeployments(taskTracker.get(app.id).toSeq, runningDeployments))
-      else apps.map(app => app.withTaskCountsAndDeployments(taskTracker.get(app.id).toSeq, runningDeployments))
+      if (embed == EmbedTasks) apps.map { app =>
+        app.withTasksAndDeployments(enrichedTasks(app), runningDeployments)
+      }
+      else if (embed == EmbedTasksAndFailures) apps.map { app =>
+        app.withTasksAndDeploymentsAndFailures(
+          enrichedTasks(app),
+          runningDeployments,
+          taskFailureRepository.current(app.id)
+        )
+      }
+      else apps.map { app =>
+        app.withTaskCountsAndDeployments(enrichedTasks(app), runningDeployments)
+      }
     Map("apps" -> mapped)
   }
 
@@ -59,15 +76,28 @@ class AppsResource @Inject() (
   @Path("""{id:.+}""")
   @Timed
   def show(@PathParam("id") id: String): Response = {
-    def runningDeployments = result(service.listRunningDeployments()).map(r => r._1)
-    def transitiveApps(gid: PathId) = {
+    def runningDeployments: Seq[DeploymentPlan] = result(service.listRunningDeployments()).map(r => r._1)
+    def transitiveApps(gid: PathId): Response = {
       val apps = result(groupManager.group(gid)).map(group => group.transitiveApps).getOrElse(Nil)
-      val withTasks = apps.map(app => app.withTasksAndDeployments(taskTracker.get(app.id).toSeq, runningDeployments))
+      val withTasks = apps.map { app =>
+        app.withTasksAndDeploymentsAndFailures(
+          enrichedTasks(app),
+          runningDeployments,
+          taskFailureRepository.current(app.id)
+        )
+      }
       ok(Map("*" -> withTasks))
     }
-    def app() = service.getApp(id.toRootPath) match {
-      case Some(app) => ok(Map("app" -> app.withTasksAndDeployments(taskTracker.get(app.id).toSeq, runningDeployments)))
-      case None      => unknownApp(id.toRootPath)
+    def app(): Response = service.getApp(id.toRootPath) match {
+      case Some(app) =>
+        val mapped = app.withTasksAndDeploymentsAndFailures(
+          enrichedTasks(app),
+          runningDeployments,
+          taskFailureRepository.current(app.id)
+        )
+        ok(Map("app" -> mapped))
+
+      case None => unknownApp(id.toRootPath)
     }
     id match {
       case ListApps(gid) => transitiveApps(gid.toRootPath)
@@ -113,7 +143,7 @@ class AppsResource @Inject() (
     def updateApp(update: AppUpdate, app: AppDefinition): AppDefinition = {
       update.version.flatMap(v => service.getApp(app.id, v)).orElse(Some(update(app))).getOrElse(app)
     }
-    def updateGroup(root: Group) = updates.foldLeft(root) { (group, update) =>
+    def updateGroup(root: Group): Group = updates.foldLeft(root) { (group, update) =>
       update.id match {
         case Some(id) => group.updateApp(id.canonicalPath(), updateApp(update, _), version)
         case None     => group
@@ -141,10 +171,17 @@ class AppsResource @Inject() (
   }
 
   @Path("{appId:.+}/tasks")
-  def appTasksResource() = new AppTasksResource(service, taskTracker, healthCheckManager, config, groupManager)
+  def appTasksResource(): AppTasksResource =
+    new AppTasksResource(service, taskTracker, healthCheckManager, config, groupManager)
 
   @Path("{appId:.+}/versions")
-  def appVersionsResource() = new AppVersionsResource(service, config)
+  def appVersionsResource(): AppVersionsResource = new AppVersionsResource(service, config)
+
+  private def enrichedTasks(app: AppDefinition): Seq[EnrichedTask] =
+    taskTracker.get(app.id).map { task =>
+      val hcResults = result(healthCheckManager.status(app.id, task.getId))
+      EnrichedTask(app.id, task, hcResults)
+    }.to[Seq]
 
   private def maybePostEvent(req: HttpServletRequest, app: AppDefinition) =
     eventBus.publish(ApiPostEvent(req.getRemoteAddr, req.getRequestURI, app))

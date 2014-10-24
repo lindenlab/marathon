@@ -7,6 +7,7 @@ import mesosphere.marathon.event.MesosStatusUpdateEvent
 import mesosphere.marathon.state.PathId
 import mesosphere.marathon.tasks.TaskTracker
 import mesosphere.marathon.upgrade.StoppingBehavior.SynchronizeTasks
+import org.apache.mesos.{ Protos, SchedulerDriver }
 
 import scala.collection.mutable
 import scala.concurrent.Promise
@@ -15,6 +16,7 @@ import scala.concurrent.duration._
 trait StoppingBehavior extends Actor with ActorLogging {
   import context.dispatcher
 
+  def driver: SchedulerDriver
   def eventBus: EventStream
   def promise: Promise[Unit]
   def taskTracker: TaskTracker
@@ -39,9 +41,10 @@ trait StoppingBehavior extends Actor with ActorLogging {
           "The operation has been cancelled"))
   }
 
-  val taskFinished = "^TASK_(FINISHED|LOST|KILLED)$".r
-  def receive = {
-    case MesosStatusUpdateEvent(_, taskId, taskFinished(_), _, _, _, _, _, _) if idsToKill(taskId) =>
+  val taskFinished = "^TASK_(FAILED|FINISHED|LOST|KILLED)$".r
+
+  def receive: Receive = {
+    case MesosStatusUpdateEvent(_, taskId, taskFinished(_), _, _, _, _, _, _, _) if idsToKill(taskId) =>
       idsToKill.remove(taskId)
       log.info(s"Task $taskId has been killed. Waiting for ${idsToKill.size} more tasks to be killed.")
       checkFinished()
@@ -49,6 +52,15 @@ trait StoppingBehavior extends Actor with ActorLogging {
     case SynchronizeTasks =>
       val trackerIds = taskTracker.get(appId).map(_.getId).toSet
       idsToKill = idsToKill.filter(trackerIds)
+
+      idsToKill.foreach { id =>
+        driver.killTask(
+          Protos.TaskID
+            .newBuilder
+            .setValue(id)
+            .build())
+      }
+
       scheduleSynchronization()
       checkFinished()
 

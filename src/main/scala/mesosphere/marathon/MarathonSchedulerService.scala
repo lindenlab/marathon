@@ -24,6 +24,7 @@ import mesosphere.mesos.util.FrameworkIdUtil
 import mesosphere.util.PromiseActor
 import org.apache.log4j.Logger
 
+import scala.collection.immutable.Seq
 import scala.concurrent.duration.{ MILLISECONDS, _ }
 import scala.concurrent.{ TimeoutException, Await, Future, Promise }
 import scala.util.{ Failure, Random, Success }
@@ -98,7 +99,10 @@ class MarathonSchedulerService @Inject() (
 
   def listRunningDeployments(): Future[Seq[(DeploymentPlan, DeploymentStepInfo)]] =
     (schedulerActor ? RetrieveRunningDeployments)
-      .recoverWith{ case _: TimeoutException => Future.failed(new TimeoutException(s"Can not retrieve the list of running deployments in time")) }
+      .recoverWith {
+        case _: TimeoutException =>
+          Future.failed(new TimeoutException(s"Can not retrieve the list of running deployments in time"))
+      }
       .mapTo[RunningDeployments]
       .map(_.plans)
 
@@ -212,9 +216,7 @@ class MarathonSchedulerService @Inject() (
     driver = MarathonSchedulerDriver.newDriver(config, scheduler, frameworkId)
   }
 
-  def isLeader = {
-    leader.get()
-  }
+  def isLeader(): Boolean = leader.get()
 
   def getLeader: Option[String] = {
     candidate.flatMap { c =>

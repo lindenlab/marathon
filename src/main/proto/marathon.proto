@@ -20,6 +20,8 @@ message Constraint {
       CLUSTER = 2;
       // Tasks will be grouped by field. Value specifies the minimum size of each group.
       GROUP_BY = 3;
+      // Field must not match the regex given by value.
+      UNLIKE = 4;
   }
   required Operator operator = 2;
   optional string value = 3;
@@ -60,7 +62,7 @@ message ServiceDefinition {
   repeated string dependencies = 16;
   repeated string storeUrls = 17;
   optional bool require_ports = 18 [default = false];
-  optional mesos.ContainerInfo container = 19;
+  optional ExtendedContainerInfo container = 19;
 }
 
 message MarathonTask {
@@ -71,7 +73,7 @@ message MarathonTask {
   optional int64 staged_at = 5;
   optional int64 started_at = 6;
   repeated mesos.TaskStatus OBSOLETE_statuses = 7;
-  optional string version = 8;
+  optional string version = 8 [default = "1970-01-01T00:00:00.000Z"]; // since 0.7.0
   optional mesos.TaskStatus status = 9;
 }
 
@@ -83,6 +85,32 @@ message MarathonApp {
 message ContainerInfo {
   required bytes image = 1 [default = ""];
   repeated bytes options = 2;
+}
+
+// Copied from mesos.proto
+// Extends DockerInfo.PortMapping to include `service_port`.
+message ExtendedContainerInfo {
+
+  message DockerInfo {
+
+    required string image = 1;
+
+    optional mesos.ContainerInfo.DockerInfo.Network network = 2 [default = HOST];
+
+    message PortMapping {
+      required uint32 host_port = 1;
+      required uint32 container_port = 2;
+      optional string protocol = 3;
+      optional uint32 service_port = 100 [default = 0];
+    }
+
+    repeated PortMapping port_mappings = 3;
+  }
+
+  required mesos.ContainerInfo.Type type = 1;
+  repeated mesos.Volume volumes = 2;
+
+  optional DockerInfo docker = 3;
 }
 
 message EventSubscribers {
@@ -105,5 +133,22 @@ message GroupDefinition {
   repeated ServiceDefinition apps = 3;
   repeated GroupDefinition groups = 4;
   repeated string dependencies = 5;
+}
+
+message DeploymentPlanDefinition {
+  required string id = 1;
+  required string version = 2;
+  required GroupDefinition original = 4;
+  required GroupDefinition target = 5;
+}
+
+message TaskFailure {
+  required string app_id = 1;
+  required mesos.TaskID task_id = 2;
+  required mesos.TaskState state = 3;
+  optional string message = 4 [default = ""];
+  optional string host = 5 [default = ""];
+  required string version = 6;
+  required string timestamp = 7;
 }
 

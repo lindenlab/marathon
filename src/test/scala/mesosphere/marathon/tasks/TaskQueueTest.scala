@@ -7,6 +7,7 @@ import mesosphere.marathon.state.AppDefinition
 import mesosphere.marathon.state.PathId.StringPathId
 import mesosphere.marathon.tasks.TaskQueue.QueuedTask
 
+import scala.collection.immutable.Seq
 import scala.concurrent.duration.Deadline
 
 class TaskQueueTest extends MarathonSpec {
@@ -37,6 +38,16 @@ class TaskQueueTest extends MarathonSpec {
     assert(app2 == queue.poll().get.app, s"Should return $app2")
     assert(app3 == queue.poll().get.app, s"Should return $app3")
     assert(app1 == queue.poll().get.app, s"Should return $app1")
+  }
+
+  test("Retain") {
+    queue.add(app1)
+    queue.add(app2)
+    queue.add(app3)
+
+    assert(queue.list.size == 3, "Queue should contain 3 elements.")
+    queue.retain { case QueuedTask(app, _) => app.id == app2.id }
+    assert(queue.list.size == 1, "Queue should contain 1 elements.")
   }
 
   test("RemoveAll") {

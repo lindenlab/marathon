@@ -1,6 +1,6 @@
 package mesosphere.marathon
 
-import akka.actor.{ ActorSystem, Props }
+import akka.actor.{ ActorRef, ActorSystem, Props }
 import akka.testkit.{ ImplicitSender, TestActorRef, TestKit, TestProbe }
 import akka.util.Timeout
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -12,7 +12,7 @@ import mesosphere.marathon.io.storage.StorageProvider
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state._
 import mesosphere.marathon.tasks.{ TaskIdUtil, TaskQueue, TaskTracker }
-import mesosphere.marathon.upgrade.DeploymentPlan
+import mesosphere.marathon.upgrade.{ DeploymentStep, StopApplication, DeploymentPlan }
 import mesosphere.mesos.protos.Implicits._
 import mesosphere.mesos.protos.TaskID
 import mesosphere.mesos.util.FrameworkIdUtil
@@ -24,6 +24,7 @@ import org.mockito.invocation.InvocationOnMock
 import org.mockito.stubbing.Answer
 import org.scalatest.{ BeforeAndAfterAll, Matchers }
 
+import scala.collection.immutable.Seq
 import scala.collection.mutable
 import scala.concurrent.Future
 import scala.concurrent.duration._
@@ -35,14 +36,16 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
     with ImplicitSender {
 
   var repo: AppRepository = _
+  var deploymentRepo: DeploymentRepository = _
   var hcManager: HealthCheckManager = _
   var tracker: TaskTracker = _
   var queue: TaskQueue = _
   var frameworkIdUtil: FrameworkIdUtil = _
-  var schedulerActor: TestActorRef[MarathonSchedulerActor] = _
+  var schedulerActor: ActorRef = _
   var driver: SchedulerDriver = _
   var taskIdUtil: TaskIdUtil = _
   var storage: StorageProvider = _
+  var taskFailureEventRepository: TaskFailureRepository = _
 
   implicit val defaultTimeout: Timeout = 5.seconds
 
@@ -50,16 +53,30 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
     driver = mock[SchedulerDriver]
     MarathonSchedulerDriver.driver = Some(driver)
     repo = mock[AppRepository]
+    deploymentRepo = mock[DeploymentRepository]
     hcManager = mock[HealthCheckManager]
     tracker = mock[TaskTracker]
-    queue = mock[TaskQueue]
+    queue = spy(new TaskQueue)
     frameworkIdUtil = mock[FrameworkIdUtil]
     taskIdUtil = new TaskIdUtil
     storage = mock[StorageProvider]
-    schedulerActor = TestActorRef[MarathonSchedulerActor](Props(
+    taskFailureEventRepository = mock[TaskFailureRepository]
+
+    when(deploymentRepo.store(any())).thenAnswer(new Answer[Future[DeploymentPlan]] {
+      override def answer(p1: InvocationOnMock): Future[DeploymentPlan] = {
+        Future.successful(p1.getArguments()(0).asInstanceOf[DeploymentPlan])
+      }
+    })
+
+    when(deploymentRepo.expunge(any())).thenReturn(Future.successful(Seq(true)))
+
+    when(deploymentRepo.all()).thenReturn(Future.successful(Nil))
+
+    schedulerActor = system.actorOf(Props(
       classOf[MarathonSchedulerActor],
       new ObjectMapper(),
       repo,
+      deploymentRepo,
       hcManager,
       tracker,
       queue,
@@ -67,6 +84,7 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
       taskIdUtil,
       storage,
       system.eventStream,
+      taskFailureEventRepository,
       mock[MarathonConf]
     ))
   }
@@ -101,9 +119,11 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
 
     expectMsg(5.seconds, TasksReconciled)
 
-    verify(tracker).shutdown("nope".toPath)
-    verify(queue).add(app)
-    verify(driver).killTask(TaskID("task_a"))
+    awaitAssert({
+      verify(tracker).shutdown("nope".toPath)
+      verify(queue).add(app)
+      verify(driver).killTask(TaskID("task_a"))
+    }, 5.seconds, 10.millis)
   }
 
   test("ScaleApp") {
@@ -116,7 +136,10 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
     when(tracker.count(app.id)).thenReturn(0)
 
     schedulerActor ! ScaleApp("test-app".toPath)
-    verify(queue).add(app)
+
+    awaitAssert({
+      verify(queue).add(app)
+    }, 5.seconds, 10.millis)
 
     expectMsg(5.seconds, AppScaled(app.id))
   }
@@ -124,20 +147,6 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
   test("Kill tasks with scaling") {
     val app = AppDefinition(id = "test-app".toPath, instances = 1)
     val taskA = MarathonTask.newBuilder().setId("taskA_id").build()
-
-    val schedulerActor = system.actorOf(Props(
-      classOf[MarathonSchedulerActor],
-      new ObjectMapper(),
-      repo,
-      hcManager,
-      tracker,
-      queue,
-      frameworkIdUtil,
-      taskIdUtil,
-      storage,
-      system.eventStream,
-      mock[MarathonConf]
-    ))
 
     when(repo.allIds()).thenReturn(Future.successful(Seq(app.id.toString)))
     when(tracker.get(app.id)).thenReturn(Set[MarathonTask](taskA))
@@ -151,9 +160,11 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
     when(tracker.count(app.id)).thenReturn(0)
     when(repo.store(any())).thenReturn(Future.successful(app))
 
+    val statusUpdateEvent = MesosStatusUpdateEvent("", taskA.getId, "TASK_FAILED", "", app.id, "", Nil, app.version.toString)
+
     when(driver.killTask(TaskID(taskA.getId))).thenAnswer(new Answer[Status] {
       def answer(invocation: InvocationOnMock): Status = {
-        system.eventStream.publish(MesosStatusUpdateEvent("", taskA.getId, "TASK_KILLED", app.id, "", Nil, app.version.toString))
+        system.eventStream.publish(statusUpdateEvent)
         Status.DRIVER_RUNNING
       }
     })
@@ -167,6 +178,10 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
     schedulerActor ! KillTasks(app.id, Set(taskA.getId), scale = true)
 
     expectMsg(5.seconds, TasksKilled(app.id, Set(taskA.getId)))
+
+    val Some(taskFailureEvent) = TaskFailure.FromMesosStatusUpdateEvent(statusUpdateEvent)
+
+    verify(taskFailureEventRepository, times(1)).store(app.id, taskFailureEvent)
 
     verify(repo, times(3)).store(app.copy(instances = 0))
   }
@@ -194,7 +209,7 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
     system.eventStream.unsubscribe(probe.ref)
   }
 
-  test("Deployment fail to acquire lock") {
+  test("Deployment resets rate limiter for affected apps") {
     val probe = TestProbe()
     val app = AppDefinition(id = PathId("app1"), cmd = Some("cmd"), instances = 2, upgradeStrategy = UpgradeStrategy(0.5), version = Timestamp(0))
     val origGroup = Group(PathId("/foo/bar"), Set(app))
@@ -203,10 +218,35 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
 
     val targetGroup = Group(PathId("/foo/bar"), Set(appNew))
 
-    val plan = DeploymentPlan(origGroup, targetGroup)
+    val plan = DeploymentPlan("foo", origGroup, targetGroup, List(DeploymentStep(List(StopApplication(app)))), Timestamp.now())
 
-    val lock = schedulerActor.underlyingActor.appLocks.get(app.id)
-    lock.acquire()
+    system.eventStream.subscribe(probe.ref, classOf[UpgradeEvent])
+
+    queue.rateLimiter.addDelay(app)
+
+    schedulerActor ! Deploy(plan)
+
+    expectMsg(DeploymentStarted(plan))
+
+    awaitCond(queue.rateLimiter.getDelay(app).isOverdue(), 200.millis)
+
+    system.eventStream.unsubscribe(probe.ref)
+  }
+
+  test("Deployment fail to acquire lock") {
+    val app = AppDefinition(id = PathId("app1"), cmd = Some("cmd"), instances = 2, upgradeStrategy = UpgradeStrategy(0.5), version = Timestamp(0))
+    val group = Group(PathId("/foo/bar"), Set(app))
+
+    val plan = DeploymentPlan(Group.empty, group)
+
+    when(repo.store(any())).thenReturn(Future.successful(app))
+    when(repo.currentVersion(app.id)).thenReturn(Future.successful(None))
+    when(tracker.get(app.id)).thenReturn(Set.empty[MarathonTask])
+    when(repo.expunge(app.id)).thenReturn(Future.successful(Nil))
+
+    schedulerActor ! Deploy(plan)
+
+    expectMsgType[DeploymentStarted]
 
     schedulerActor ! Deploy(plan)
 
@@ -214,7 +254,42 @@ class MarathonSchedulerActorTest extends TestKit(ActorSystem("System"))
 
     answer.cmd should equal(Deploy(plan))
     answer.reason.isInstanceOf[AppLockedException] should be(true)
+  }
 
-    lock.release()
+  test("Restart deployments after failover") {
+    val app = AppDefinition(id = PathId("app1"), cmd = Some("cmd"), instances = 2, upgradeStrategy = UpgradeStrategy(0.5), version = Timestamp(0))
+    val group = Group(PathId("/foo/bar"), Set(app))
+
+    val plan = DeploymentPlan(Group.empty, group)
+
+    deploymentRepo = mock[DeploymentRepository]
+
+    when(deploymentRepo.expunge(any())).thenReturn(Future.successful(Seq(true)))
+
+    when(deploymentRepo.all()).thenReturn(Future.successful(Seq(plan)))
+
+    schedulerActor = system.actorOf(Props(
+      classOf[MarathonSchedulerActor],
+      new ObjectMapper(),
+      repo,
+      deploymentRepo,
+      hcManager,
+      tracker,
+      queue,
+      frameworkIdUtil,
+      taskIdUtil,
+      storage,
+      system.eventStream,
+      taskFailureEventRepository,
+      mock[MarathonConf]
+    ))
+
+    schedulerActor ! Deploy(plan)
+
+    // This indicates that the deployment is already running,
+    // which means it has successfully been restarted
+    val answer = expectMsgType[CommandFailed]
+    answer.cmd should equal(Deploy(plan))
+    answer.reason.isInstanceOf[AppLockedException] should be(true)
   }
 }

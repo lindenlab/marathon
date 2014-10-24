@@ -3,23 +3,25 @@ package mesosphere.marathon.upgrade
 import akka.actor._
 import akka.event.EventStream
 import mesosphere.marathon.state.AppDefinition
-import mesosphere.marathon.tasks.TaskQueue
+import mesosphere.marathon.tasks.{ TaskTracker, TaskQueue }
 import mesosphere.marathon.{ AppStartCanceledException, SchedulerActions }
 import org.apache.mesos.SchedulerDriver
 
 import scala.concurrent.Promise
 
 class AppStartActor(
-    driver: SchedulerDriver,
-    scheduler: SchedulerActions,
+    val driver: SchedulerDriver,
+    val scheduler: SchedulerActions,
     val taskQueue: TaskQueue,
+    val taskTracker: TaskTracker,
     val eventBus: EventStream,
     val app: AppDefinition,
     scaleTo: Int,
     promise: Promise[Unit]) extends Actor with ActorLogging with StartingBehavior {
 
   val expectedSize = scaleTo
-  def withHealthChecks = app.healthChecks.nonEmpty
+
+  def withHealthChecks: Boolean = app.healthChecks.nonEmpty
 
   def initializeStart(): Unit = {
     scheduler.startApp(driver, app.copy(instances = scaleTo))

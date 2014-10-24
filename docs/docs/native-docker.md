@@ -10,17 +10,41 @@ the native Docker support added in Apache Mesos version 0.20.0
 
 ### Prerequisites
 
-- Mesos version 0.20.0 or later
-- Docker version 1.0.0 or later installed on each Mesos slave
-- Start all `mesos-slave` instances with the flag
-  `--containerizers=docker,mesos`.
-    - _**The order of the containerizers is significant!**_
-    - Mesosphere packages read config from well-known paths, so it's possible
-      to specify this by doing
+## Docker
 
-        ```bash
-        $ echo 'docker,mesos' > /etc/mesos-slave/containerizers
-        ```
+Docker version 1.0.0 or later installed on each slave node.
+
+### Configure mesos-slave
+
+  <div class="alert alert-info">
+    <strong>Note:</strong> All commands below assume `mesos-slave` is being run
+    as a service using the package provided by 
+    <a href="http://mesosphere.com/2014/07/17/mesosphere-package-repositories/">Mesosphere</a>
+  </div>
+
+1. Update slave configuration to specify the use of the Docker containerizer
+  <div class="alert alert-info">
+    <strong>Note:</strong> The order of the parameters to `containerizers` is important. 
+    It specifies the priority used when choosing the containerizer to launch
+    the task.
+  </div>
+
+    ```bash
+    $ echo 'docker,mesos' > /etc/mesos-slave/containerizers
+    ```
+
+2. Increase the executor timeout to account for the potential delay in pulling a docker image to the slave.
+
+
+    ```bash
+    $ echo '5mins' > /etc/mesos-slave/executor_registration_timeout
+    ```
+
+3. Restart `mesos-slave` process to load the new configuration
+
+### Configure marathon
+
+1. Increase the marathon [command line option]({{ site.baseurl }}/docs/command-line-flags.html") `--task_launch_timeout` to at least the executor timeout you set on your slaves in the previous step.
 
 ### Resources
 
@@ -28,7 +52,7 @@ the native Docker support added in Apache Mesos version 0.20.0
 
 ## Overview
 
-To use the new native container support, add a `container` field to your
+To use the native container support, add a `container` field to your
 app definition JSON:
 
 ```json
@@ -57,12 +81,88 @@ app definition JSON:
 where `volumes` and `type` are optional (the default type is `DOCKER`).  More
 container types may be added later.
 
-Note that initially, Mesos supports only the host (`--net=host`) Docker
-networking mode.
+  <div class="alert alert-info">
+    <strong>Note:</strong> Initially, Mesos supports only the host (`--net=host`) Docker
+    networking mode.
+  </div>
 
 For convenience, the mount point of the mesos sandbox is available in the
 environment as `$MESOS_SANDBOX`.  The `$HOME` environment variable is set
 by default to the same value as `$MESOS_SANDBOX`.
+
+### Bridged Networking Mode
+
+_Note: Requires Mesos 0.20.1 and Marathon 0.7.1_
+
+Bridged networking makes it easy to run programs that bind to statically
+configured ports in Docker containers. Marathon can "bridge" the gap between
+the port resource accounting done by Mesos and the host ports that are bound
+by Docker.
+
+**Dynamic port mapping:**
+
+Let's begin by taking an example app definition:
+
+```json
+{
+  "id": "bridged-webapp",
+  "cmd": "python3 -m http.server 8080",
+  "cpus": 0.5,
+  "mem": 64.0,
+  "instances": 2,
+  "container": {
+    "type": "DOCKER",
+    "docker": {
+      "image": "python:3",
+      "network": "BRIDGE",
+      "portMappings": [
+        { "containerPort": 8080, "hostPort": 0, "servicePort": 9000, "protocol": "tcp" },
+        { "containerPort": 161, "hostPort": 0, "protocol": "udp"}
+      ]
+    }
+  },
+  "healthChecks": [
+    {
+      "protocol": "HTTP",
+      "portIndex": 0,
+      "path": "/",
+      "gracePeriodSeconds": 5,
+      "intervalSeconds": 20,
+      "maxConsecutiveFailures": 3
+    }
+  ]
+}
+```
+
+Here `"hostPort": 0` retains the traditional meaning in Marathon, which is "a
+random port from the range included in the Mesos resource offer". The resulting
+host ports for each task are exposed via the task details in the REST API and
+the Marathon web UI. `"hostPort"` is optional and defaults to `0`.
+
+`"servicePort"` is a helper port intended for doing service discovery using
+a well-known port per service.  The `servicePort` parameter is optional
+and defaults to `0`.  Like `hostPort`, If the value is `0`, a random port will
+be assigned.  The values for random service ports are in the
+range `[local_port_min, local_port_max]` where `local_port_min` and
+`local_port_max` are command line options with default values of `10000` and
+`20000`, respectively.
+
+The `"protocol"` parameter is optional and defaults to `"tcp"`.
+
+**Static port mapping:**
+
+It's also possible to specify non-zero host ports. When doing this
+you must ensure that the target ports are included in some resource offers!
+The Mesos slave announces port resources in the range `[31000-32000]` by
+default. This can be overridden; for example to also expose ports in the range
+`[8000-9000]`:
+
+```
+--resources="ports(*):[8000-9000, 31000-32000]"
+```
+
+See the [network configuration](https://docs.docker.com/articles/networking/)
+documentation for more details on how Docker handles networking.
 
 ### Using a private Docker Repository
 

@@ -3,6 +3,7 @@ package mesosphere.marathon.health
 import akka.actor.{ Actor, ActorLogging, ActorRef, Cancellable, Props }
 import akka.event.EventStream
 import mesosphere.marathon.MarathonSchedulerDriver
+import mesosphere.marathon.Protos.HealthCheckDefinition.Protocol
 import mesosphere.marathon.Protos.MarathonTask
 import mesosphere.marathon.event._
 import mesosphere.marathon.state.PathId
@@ -62,18 +63,19 @@ class HealthCheckActor(
     taskHealth = taskHealth.filterKeys(activeTaskIds)
   }
 
-  protected[this] def scheduleNextHealthCheck(): Unit = {
-    log.debug(
-      "Scheduling next health check for app [{}] and healthCheck [{}]",
-      appId,
-      healthCheck
-    )
-    nextScheduledCheck = Some(
-      context.system.scheduler.scheduleOnce(healthCheck.interval) {
-        self ! Tick
-      }
-    )
-  }
+  protected[this] def scheduleNextHealthCheck(): Unit =
+    if (healthCheck.protocol != Protocol.COMMAND) {
+      log.debug(
+        "Scheduling next health check for app [{}] and healthCheck [{}]",
+        appId,
+        healthCheck
+      )
+      nextScheduledCheck = Some(
+        context.system.scheduler.scheduleOnce(healthCheck.interval) {
+          self ! Tick
+        }
+      )
+    }
 
   protected[this] def dispatchJobs(): Unit = {
     log.debug("Dispatching health check jobs to workers")
@@ -114,8 +116,9 @@ class HealthCheckActor(
       task.getStartedAt + healthCheck.gracePeriod.toMillis > System.currentTimeMillis()
   }
 
-  def receive = {
-    case GetTaskHealth(taskId) => sender ! taskHealth.get(taskId)
+  def receive: Receive = {
+    case GetTaskHealth(taskId) => sender() ! taskHealth.get(taskId)
+
     case Tick =>
       purgeStatusOfDoneTasks()
       dispatchJobs()

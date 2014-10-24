@@ -6,6 +6,8 @@ title: Command Line Flags
 
 The following options can influence how Marathon works:
 
+*All options can be also set by environment variable `MARATON_OPTION_NAME` (the option name with a `MARATHON_` prefix added to it), for example `MARATHON_MASTER` for `--master` option.  Please note that command line options precede environment variables.  This means that if the `MARATHON_MASTER` environment variable is set and `--master` is supplied on the command line, then the environment variable is ignored.*
+
 ### Required Flags
 
 * `--master` (Required): The URL of the Mesos master. The format is a
@@ -25,10 +27,6 @@ The following options can influence how Marathon works:
     during mesos-slave restarts and upgrades.
 * `--executor` (Optional. Default: "//cmd"): Executor to use when none is
     specified.
-* `--executor_health_checks` (Optional. Default: false)): If this flag is supplied,
-    health checks are executed on the slaves on which the tasks are running.
-    Requires Mesos `0.20.0` or higher. Use of this option limits app health
-    checks to at most one. The only protocol supported by Mesos is COMMAND.
 * `--failover_timeout` (Optional. Default: 604800 seconds (1 week)): The
     failover_timeout for Mesos in seconds.
 * `--ha` (Optional. Default: true): Runs Marathon in HA mode with leader election.
@@ -54,12 +52,21 @@ The following options can influence how Marathon works:
 * `--task_launch_timeout` (Optional. Default: 60000 (60 seconds)): Time,
     in milliseconds, to wait for a task to enter the TASK_RUNNING state before
     killing it.
+* `--event_subscriber` (Optional. Default: None): Event subscriber module to
+    enable. Currently the only valid value is `http_callback`.
+* `--http_endpoints` (Optional. Default: None): Pre-configured http callback
+    URLs. Valid only in conjunction with `--event_subscriber http_callback`.
+    Additional callback URLs may also be set dynamically via the REST API.
 * `--zk` (Optional. Default: None): ZooKeeper URL for storing state.
     Format: `zk://host1:port1,host2:port2,.../path`
 * `--zk_max_versions` (Optional. Default: None): Limit the number of versions
     stored for one entity.
 * `--zk_timeout` (Optional. Default: 10000 (10 seconds)): Timeout for ZooKeeper
     in milliseconds.
+* `--mesos_authentication_principal` (Optional.): The Mesos principal used for
+    authentication
+* `--mesos_authentication_secret_file` (Optional.): The path to the Mesos secret
+    file containing the authentication secret
 
 ### Optional Flags Inherited from [Chaos](https://github.com/mesosphere/chaos)
 

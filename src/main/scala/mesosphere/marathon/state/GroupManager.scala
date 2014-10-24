@@ -2,15 +2,15 @@ package mesosphere.marathon.state
 
 import java.net.URL
 import javax.inject.Inject
+import java.lang.{ Integer => JInt }
 import scala.concurrent.Future
 import scala.util.{ Failure, Success }
+import scala.collection.immutable.Seq
 import scala.collection.mutable
 
 import akka.event.EventStream
 import com.google.inject.Singleton
 import com.google.inject.name.Named
-import org.apache.log4j.Logger
-
 import mesosphere.marathon.api.ModelValidation
 import mesosphere.marathon.event.{ EventModule, GroupChangeFailed, GroupChangeSuccess }
 import mesosphere.marathon.io.PathFun
@@ -19,6 +19,8 @@ import mesosphere.marathon.tasks.TaskTracker
 import mesosphere.marathon.upgrade._
 import mesosphere.marathon.{ MarathonConf, MarathonSchedulerService, PortRangeExhaustedException }
 import mesosphere.util.ThreadPoolContext.context
+import org.apache.log4j.Logger
+import org.apache.mesos.Protos.ContainerInfo.DockerInfo.Network
 
 /**
   * The group manager is the facade for all group related actions.
@@ -35,7 +37,8 @@ class GroupManager @Singleton @Inject() (
   private[this] val log = Logger.getLogger(getClass.getName)
   private[this] val zkName = "root"
 
-  def root(withLatestApps: Boolean = true): Future[Group] = groupRepo.group(zkName, withLatestApps).map(_.getOrElse(Group.empty))
+  def root(withLatestApps: Boolean = true): Future[Group] =
+    groupRepo.group(zkName, withLatestApps).map(_.getOrElse(Group.empty))
 
   /**
     * Get all available versions for given group identifier.
@@ -87,9 +90,12 @@ class GroupManager @Singleton @Inject() (
     *              one can control, to stop a current deployment and start a new one.
     * @return the deployment plan which will be executed.
     */
-  def update(gid: PathId, fn: Group => Group, version: Timestamp = Timestamp.now(), force: Boolean = false): Future[DeploymentPlan] = {
+  def update(
+    gid: PathId,
+    fn: Group => Group,
+    version: Timestamp = Timestamp.now(),
+    force: Boolean = false): Future[DeploymentPlan] =
     upgrade(gid, _.update(gid, fn, version), version, force)
-  }
 
   /**
     * Update application with given identifier and update function.
@@ -102,11 +108,18 @@ class GroupManager @Singleton @Inject() (
     * @param force if the change has to be forced.
     * @return the deployment plan which will be executed.
     */
-  def updateApp(appId: PathId, fn: AppDefinition => AppDefinition, version: Timestamp = Timestamp.now(), force: Boolean = false): Future[DeploymentPlan] = {
+  def updateApp(
+    appId: PathId,
+    fn: AppDefinition => AppDefinition,
+    version: Timestamp = Timestamp.now(),
+    force: Boolean = false): Future[DeploymentPlan] =
     upgrade(appId.parent, _.updateApp(appId, fn, version), version, force)
-  }
 
-  private def upgrade(gid: PathId, change: Group => Group, version: Timestamp = Timestamp.now(), force: Boolean = false): Future[DeploymentPlan] = synchronized {
+  private def upgrade(
+    gid: PathId,
+    change: Group => Group,
+    version: Timestamp = Timestamp.now(),
+    force: Boolean = false): Future[DeploymentPlan] = synchronized {
     log.info(s"Upgrade id:$gid version:$version with force:$force")
 
     def deploy(from: Group, to: Group, resolve: Seq[ResolveArtifacts]): Future[DeploymentPlan] = {
@@ -120,8 +133,8 @@ class GroupManager @Singleton @Inject() (
       from <- rootGroup //ignore the state of the scheduler
       (to, resolve) <- resolveStoreUrls(assignDynamicAppPort(from, change(from)))
       _ = requireValid(checkGroup(to))
-      _ <- groupRepo.store(zkName, to)
       plan <- deploy(from, to, resolve)
+      _ <- groupRepo.store(zkName, to)
     } yield plan
 
     deployment.onComplete {
@@ -136,41 +149,85 @@ class GroupManager @Singleton @Inject() (
   }
 
   private[state] def resolveStoreUrls(group: Group): Future[(Group, Seq[ResolveArtifacts])] = {
-    def url2Path(url: String) = contentPath(new URL(url)).map { url -> _ }
-    Future.sequence(group.transitiveApps.flatMap(_.storeUrls).map(url2Path)).map(_.toMap).map { paths =>
-      //Filter out all items with already existing path.
-      //Since the path is derived from the content itself,
-      //it will only change, if the content changes.
-      val downloads = mutable.Map(paths.toSeq.filterNot{ case (url, path) => storage.item(path).exists }: _*)
-      val actions = mutable.ListBuffer.empty[ResolveArtifacts]
-      group.updateApp(group.version) { app =>
-        if (app.storeUrls.isEmpty) app else {
-          val storageUrls = app.storeUrls.map(paths).map(storage.item(_).url)
-          val resolved = app.copy(uris = app.uris ++ storageUrls, storeUrls = Seq.empty)
-          val appDownloads = app.storeUrls.flatMap(url => downloads.remove(url).map(path => new URL(url) -> path)).toMap
-          if (appDownloads.nonEmpty) actions += ResolveArtifacts(resolved, appDownloads)
-          resolved
-        }
-      } -> actions
-    }
+    def url2Path(url: String): Future[(String, String)] = contentPath(new URL(url)).map(url -> _)
+    Future.sequence(group.transitiveApps.flatMap(_.storeUrls).map(url2Path))
+      .map(_.toMap)
+      .map { paths =>
+        //Filter out all items with already existing path.
+        //Since the path is derived from the content itself,
+        //it will only change, if the content changes.
+        val downloads = mutable.Map(paths.toSeq.filterNot{ case (url, path) => storage.item(path).exists }: _*)
+        val actions = Seq.newBuilder[ResolveArtifacts]
+        group.updateApp(group.version) { app =>
+          if (app.storeUrls.isEmpty) app else {
+            val storageUrls = app.storeUrls.map(paths).map(storage.item(_).url)
+            val resolved = app.copy(uris = app.uris ++ storageUrls, storeUrls = Seq.empty)
+            val appDownloads: Map[URL, String] =
+              app.storeUrls
+                .flatMap { url => downloads.remove(url).map { path => new URL(url) -> path } }.toMap
+            if (appDownloads.nonEmpty) actions += ResolveArtifacts(resolved, appDownloads)
+            resolved
+          }
+        } -> actions.result()
+      }
   }
 
   private[state] def assignDynamicAppPort(from: Group, to: Group): Group = {
     val portRange = Range(config.localPortMin(), config.localPortMax())
     var taken = from.transitiveApps.flatMap(_.ports)
-    def nextGlobalFreePort: Integer = {
-      val port = portRange.find(!taken.contains(_)).getOrElse(throw new PortRangeExhaustedException(config.localPortMin(), config.localPortMax()))
+
+    def nextGlobalFreePort: JInt = synchronized {
+      val port = portRange.find(!taken.contains(_))
+        .getOrElse(throw new PortRangeExhaustedException(
+          config.localPortMin(),
+          config.localPortMax()
+        ))
       log.info(s"Take next configured free port: $port")
       taken += port
       port
     }
-    def appPorts(app: AppDefinition) = {
-      val alreadyAssigned = mutable.Queue(from.app(app.id).map(_.ports).getOrElse(Nil).filter(portRange.contains): _*)
-      def nextFreeAppPort = if (alreadyAssigned.nonEmpty) alreadyAssigned.dequeue() else nextGlobalFreePort
-      val ports = app.ports.map { port => if (port == 0) nextFreeAppPort else port }
-      app.copy(ports = ports)
+
+    def assignPorts(app: AppDefinition): AppDefinition = {
+      val alreadyAssigned = mutable.Queue(
+        from.app(app.id)
+          .map(_.ports.filter(p => portRange.contains(p)))
+          .getOrElse(Nil): _*
+      )
+
+      def nextFreeAppPort: JInt =
+        if (alreadyAssigned.nonEmpty) alreadyAssigned.dequeue()
+        else nextGlobalFreePort
+
+      val servicePorts: Seq[JInt] = app.servicePorts.map { port =>
+        if (port == 0) nextFreeAppPort else new JInt(port)
+      }
+
+      val container: Option[Container] = for {
+        c <- app.container
+        d <- c.docker
+        pms <- d.portMappings
+      } yield {
+        val mappings = pms.zip(servicePorts).map {
+          case (pm, sp) => pm.copy(servicePort = sp)
+        }
+        c.copy(
+          docker = Some(d.copy(
+            portMappings = Some(mappings)))
+        )
+      }
+
+      app.copy(
+        ports = servicePorts,
+        container = container
+      )
     }
-    val dynamicApps = to.transitiveApps.filter(_.hasDynamicPort).map(appPorts)
-    dynamicApps.foldLeft(to) { (update, app) => update.updateApp(app.id, _ => app, app.version) }
+
+    val dynamicApps: Set[AppDefinition] =
+      to.transitiveApps.filter(_.hasDynamicPort).map(assignPorts)
+
+    dynamicApps.foldLeft(to) { (group, app) =>
+      group.updateApp(app.id, _ => app, app.version)
+    }
   }
+
 }

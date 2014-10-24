@@ -27,9 +27,9 @@ class HealthCheckWorkerActor extends Actor with ActorLogging {
   implicit val system = context.system
   import context.dispatcher // execution context for futures
 
-  def receive = {
+  def receive: Receive = {
     case HealthCheckJob(task, check) =>
-      val replyTo = sender // avoids closing over the volatile sender ref
+      val replyTo = sender() // avoids closing over the volatile sender ref
 
       val replyWithHealth = doCheck(task, check)
 
@@ -56,8 +56,8 @@ class HealthCheckWorkerActor extends Actor with ActorLogging {
         case TCP  => tcp(task, check, port)
         case COMMAND =>
           Future.failed {
-            val message = s"$COMMAND health checks are only supported when " +
-              "running Marathon with --executor_health_checks enabled"
+            val message = s"COMMAND health checks can only be performed " +
+              "by the Mesos executor."
             log.warning(message)
             new UnsupportedOperationException(message)
           }
@@ -98,7 +98,7 @@ class HealthCheckWorkerActor extends Actor with ActorLogging {
     log.debug("Checking the health of [{}] via TCP", address)
 
     Future {
-      val address = InetSocketAddress.createUnresolved(host, port)
+      val address = new InetSocketAddress(host, port)
       val socket = new Socket
       socket.connect(address, timeoutMillis)
       socket.close()

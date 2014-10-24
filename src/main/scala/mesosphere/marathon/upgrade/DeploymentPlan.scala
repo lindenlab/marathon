@@ -3,7 +3,8 @@ package mesosphere.marathon.upgrade
 import java.net.URL
 import java.util.UUID
 
-import mesosphere.marathon.state.{ AppDefinition, Group, PathId, Timestamp }
+import mesosphere.marathon.Protos
+import mesosphere.marathon.state._
 import mesosphere.util.Logging
 
 import scala.collection.mutable.ListBuffer
@@ -26,8 +27,8 @@ final case class RestartApplication(app: AppDefinition, scaleOldTo: Int, scaleNe
 final case class ResolveArtifacts(app: AppDefinition, url2Path: Map[URL, String]) extends DeploymentAction
 
 final case class DeploymentStep(actions: List[DeploymentAction]) {
-  def +(step: DeploymentStep) = DeploymentStep(actions ++ step.actions)
-  def nonEmpty = actions.nonEmpty
+  def +(step: DeploymentStep): DeploymentStep = DeploymentStep(actions ++ step.actions)
+  def nonEmpty(): Boolean = actions.nonEmpty
 }
 
 final case class DeploymentPlan(
@@ -35,7 +36,7 @@ final case class DeploymentPlan(
     original: Group,
     target: Group,
     steps: List[DeploymentStep],
-    version: Timestamp) {
+    version: Timestamp) extends MarathonState[Protos.DeploymentPlanDefinition, DeploymentPlan] {
 
   def isEmpty: Boolean = steps.isEmpty
 
@@ -43,10 +44,11 @@ final case class DeploymentPlan(
 
   def affectedApplicationIds: Set[PathId] = steps.flatMap(_.actions.map(_.app.id)).toSet
 
-  def isAffectedBy(other: DeploymentPlan): Boolean = affectedApplicationIds.intersect(other.affectedApplicationIds).nonEmpty
+  def isAffectedBy(other: DeploymentPlan): Boolean =
+    affectedApplicationIds.intersect(other.affectedApplicationIds).nonEmpty
 
   override def toString: String = {
-    def appString(app: AppDefinition) = s"App(${app.id}, ${app.cmd}))"
+    def appString(app: AppDefinition): String = s"App(${app.id}, ${app.cmd}))"
     def actionString(a: DeploymentAction): String = a match {
       case StartApplication(app, scale)      => s"Start(${appString(app)}, $scale)"
       case StopApplication(app)              => s"Stop(${appString(app)})"
@@ -58,12 +60,37 @@ final case class DeploymentPlan(
     val stepString = steps.map("Step(" + _.actions.map(actionString) + ")").mkString("(", ", ", ")")
     s"DeploymentPlan($version, $stepString)"
   }
+
+  override def mergeFromProto(bytes: Array[Byte]): DeploymentPlan =
+    mergeFromProto(Protos.DeploymentPlanDefinition.parseFrom(bytes))
+
+  override def mergeFromProto(msg: Protos.DeploymentPlanDefinition): DeploymentPlan = DeploymentPlan(
+    original = Group.empty.mergeFromProto(msg.getOriginal),
+    target = Group.empty.mergeFromProto(msg.getTarget),
+    version = Timestamp(msg.getVersion)
+  ).copy(id = msg.getId)
+
+  override def toProto: Protos.DeploymentPlanDefinition =
+    Protos.DeploymentPlanDefinition
+      .newBuilder
+      .setId(id)
+      .setOriginal(original.toProto)
+      .setTarget(target.toProto)
+      .setVersion(version.toString)
+      .build()
 }
 
 object DeploymentPlan extends Logging {
-  def empty() = DeploymentPlan(UUID.randomUUID().toString, Group.empty, Group.empty, Nil, Timestamp.now())
+  def empty: DeploymentPlan =
+    DeploymentPlan(UUID.randomUUID().toString, Group.empty, Group.empty, Nil, Timestamp.now())
 
-  def apply(original: Group, target: Group, resolveArtifacts: Seq[ResolveArtifacts] = Seq.empty, version: Timestamp = Timestamp.now()): DeploymentPlan = {
+  def fromProto(message: Protos.DeploymentPlanDefinition): DeploymentPlan = empty.mergeFromProto(message)
+
+  def apply(
+    original: Group,
+    target: Group,
+    resolveArtifacts: Seq[ResolveArtifacts] = Seq.empty,
+    version: Timestamp = Timestamp.now()): DeploymentPlan = {
     log.info(s"Compute DeploymentPlan from $original to $target")
 
     //lookup maps for original and target apps
@@ -84,11 +111,16 @@ object DeploymentPlan extends Logging {
     val changedApplications = toStart ++ toRestart ++ toScale ++ toStop
     val (dependent, nonDependent) = target.dependencyList
 
-    //compute the restart actions: restart, kill, scale for one app
-    def restartActions(app: AppDefinition, orig: AppDefinition) = (
-      RestartApplication(app,
+    // compute the restart actions: restart, kill, scale for one app
+    // TODO: Let's create an ADT for this or refactor to a Seq
+    def restartActions(
+      app: AppDefinition,
+      orig: AppDefinition): (DeploymentAction, DeploymentAction, DeploymentAction) = (
+      RestartApplication(
+        app,
         (orig.upgradeStrategy.minimumHealthCapacity * orig.instances).ceil.toInt,
-        (app.upgradeStrategy.minimumHealthCapacity * app.instances).ceil.toInt),
+        (app.upgradeStrategy.minimumHealthCapacity * app.instances).ceil.toInt
+      ),
         KillAllOldTasksOf(app),
         ScaleApplication(app, app.instances)
     )
@@ -146,7 +178,7 @@ object DeploymentPlan extends Logging {
     //resolve artifact dependencies .
     val toResolve = List(DeploymentStep(resolveArtifacts.toList))
 
-    var finalSteps = toResolve ++ nonDependentSteps ++ dependentSteps ++ unhandledStops
+    val finalSteps = toResolve ++ nonDependentSteps ++ dependentSteps ++ unhandledStops
 
     DeploymentPlan(UUID.randomUUID().toString, original, target, finalSteps.filter(_.nonEmpty), version)
   }

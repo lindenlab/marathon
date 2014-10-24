@@ -48,7 +48,7 @@ object Main extends App {
     client
   }
 
-  def modules() = {
+  def modules(): Seq[AbstractModule] = {
     Seq(
       new HttpModule(conf) {
         // burst browser cache for assets
@@ -74,8 +74,14 @@ object Main extends App {
     }
   }
 
-  //TOOD(FL): Make Events optional / wire up.
-  lazy val conf = new ScallopConf(args) with HttpConf with MarathonConf with AppConfiguration with EventConfiguration with HttpEventConfiguration
+  class AllConf extends ScallopConf(args)
+    with HttpConf
+    with MarathonConf
+    with AppConfiguration
+    with EventConfiguration
+    with HttpEventConfiguration
+
+  lazy val conf = new AllConf
 
   run(
     classOf[HttpService],

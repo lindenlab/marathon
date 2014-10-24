@@ -66,18 +66,25 @@ trait MarathonConf extends ScallopConf with ZookeeperConf {
       "reconciliation operations.",
     default = Some(30000L)) // 30 seconds
 
-  lazy val executorHealthChecks = opt[Boolean]("executor_health_checks",
-    descr = "If enabled, health checks are performed by the executor " +
-      "instead of the Marathon scheduler.  This feature requires Mesos 0.20+",
-    default = Some(false))
-
   lazy val mesosUser = opt[String]("mesos_user",
     descr = "Mesos user for this framework",
     default = new SystemProperties().get("user.name")) // Current logged in user
 
   lazy val artifactStore = opt[String]("artifact_store",
-    descr = s"""URL to the artifact store. Supported store types ${StorageProvider.examples.keySet.mkString(", ")}. Example: ${StorageProvider.examples.values.mkString(", ")}""",
+    descr = "URL to the artifact store. " +
+      s"""Supported store types ${StorageProvider.examples.keySet.mkString(", ")}. """ +
+      s"""Example: ${StorageProvider.examples.values.mkString(", ")}""",
     validate = StorageProvider.isValidUrl,
+    noshort = true
+  )
+
+  lazy val mesosAuthenticationPrincipal = opt[String]("mesos_authentication_principal",
+    descr = "Mesos Authentication Principal",
+    noshort = true
+  )
+
+  lazy val mesosAuthenticationSecretFile = opt[String]("mesos_authentication_secret_file",
+    descr = "Mesos Authentication Secret",
     noshort = true
   )
 }

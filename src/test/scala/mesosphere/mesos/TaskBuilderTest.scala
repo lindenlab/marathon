@@ -1,19 +1,19 @@
 package mesosphere.mesos
 
-import org.mockito.Mockito._
-
-import mesosphere.marathon.Protos.{ MarathonTask, Constraint }
-import mesosphere.marathon.tasks.{ MarathonTasks, TaskTracker }
+import com.google.common.collect.Lists
 import mesosphere.marathon.MarathonSpec
+import mesosphere.marathon.Protos.{ Constraint, MarathonTask }
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state.{ AppDefinition, PathId, Timestamp }
+import mesosphere.marathon.tasks.{ MarathonTasks, TaskTracker }
+import mesosphere.mesos.protos._
+import org.apache.mesos.Protos.{ Offer, TaskInfo }
+import org.mockito.Mockito._
 import org.mockito.invocation.InvocationOnMock
 import org.mockito.stubbing.Answer
-import scala.collection.mutable
+
+import scala.collection.immutable.Seq
 import scala.collection.JavaConverters._
-import com.google.common.collect.Lists
-import org.apache.mesos.Protos.{ Offer, TaskInfo }
-import mesosphere.mesos.protos._
 
 class TaskBuilderTest extends MarathonSpec {
 
@@ -57,6 +57,12 @@ class TaskBuilderTest extends MarathonSpec {
     assert(cmd.hasValue)
     assert(cmd.getArgumentsList.asScala.isEmpty)
     assert(cmd.getValue == "foo")
+
+    assert(cmd.hasEnvironment)
+    val envVars = cmd.getEnvironment.getVariablesList.asScala
+    assert(envVars.exists(v => v.getName == "HOST" && v.getValue == offer.getHostname))
+    assert(envVars.exists(v => v.getName == "PORT0" && v.getValue.nonEmpty))
+    assert(envVars.exists(v => v.getName == "PORT1" && v.getValue.nonEmpty))
 
     for (r <- taskInfo.getResourcesList.asScala) {
       assert("*" == r.getRole)
@@ -410,16 +416,20 @@ class TaskBuilderTest extends MarathonSpec {
   test("TaskNoURIExtraction") {
 
     val command =
-      TaskBuilder.commandInfo(AppDefinition(
-        id = "testApp".toPath,
-        cpus = 1,
-        mem = 64,
-        disk = 1,
-        executor = "//cmd",
-        uris = Seq("http://www.example.com", "http://www.example.com/test.tgz",
-          "example.tar.gz"),
-        ports = Seq(8080, 8081)
-      ), Seq(1000, 1001))
+      TaskBuilder.commandInfo(
+        AppDefinition(
+          id = "testApp".toPath,
+          cpus = 1,
+          mem = 64,
+          disk = 1,
+          executor = "//cmd",
+          uris = Seq("http://www.example.com", "http://www.example.com/test.tgz",
+            "example.tar.gz"),
+          ports = Seq(8080, 8081)
+        ),
+        Some("host.mega.corp"),
+        Seq(1000, 1001)
+      )
 
     val uriinfo1 = command.getUris(0)
     assert(!uriinfo1.getExtract)

@@ -13,8 +13,9 @@ import org.rogach.scallop.ScallopConf
 import org.scalatest.mock.MockitoSugar
 import org.scalatest.{ FunSuite, Matchers }
 
-import scala.concurrent.{ Await, Future }
+import scala.collection.immutable.Seq
 import scala.concurrent.duration._
+import scala.concurrent.{ Await, Future }
 
 class GroupManagerTest extends FunSuite with MockitoSugar with Matchers {
 
@@ -27,6 +28,29 @@ class GroupManagerTest extends FunSuite with MockitoSugar with Matchers {
     val update = manager(10, 20).assignDynamicAppPort(Group.empty, group)
     update.transitiveApps.filter(_.hasDynamicPort) should be('empty)
     update.transitiveApps.flatMap(_.ports.filter(x => x >= 10 && x <= 20)) should have size 5
+  }
+
+  test("Assign dynamic app ports specified in the container") {
+    import Container.Docker
+    import Docker.PortMapping
+    import org.apache.mesos.Protos.ContainerInfo.DockerInfo.Network
+    val container = Container(
+      docker = Some(Docker(
+        image = "busybox",
+        network = Some(Network.BRIDGE),
+        portMappings = Some(Seq(
+          PortMapping(containerPort = 8080, hostPort = 0, servicePort = 0, protocol = "tcp"),
+          PortMapping (containerPort = 9000, hostPort = 10555, servicePort = 10555, protocol = "udp"),
+          PortMapping(containerPort = 9001, hostPort = 0, servicePort = 0, protocol = "tcp")
+        ))
+      ))
+    )
+    val group = Group(PathId.empty, Set(
+      AppDefinition("/app1".toPath, ports = Seq(), container = Some(container))
+    ))
+    val update = manager(10, 20).assignDynamicAppPort(Group.empty, group)
+    update.transitiveApps.filter(_.hasDynamicPort) should be ('empty)
+    update.transitiveApps.flatMap(_.ports.filter(x => x >= 10 && x <= 20)) should have size 2
   }
 
   test("Already taken ports will not be used") {
@@ -52,7 +76,6 @@ class GroupManagerTest extends FunSuite with MockitoSugar with Matchers {
   }
 
   test("Don't store invalid groups") {
-
     val scheduler = mock[MarathonSchedulerService]
     val taskTracker = mock[TaskTracker]
     val groupRepo = mock[GroupRepository]

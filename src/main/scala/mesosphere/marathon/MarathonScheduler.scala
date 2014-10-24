@@ -9,8 +9,9 @@ import mesosphere.marathon.MarathonSchedulerActor.ScaleApp
 import mesosphere.marathon.Protos.MarathonTask
 import mesosphere.marathon.event._
 import mesosphere.marathon.health.HealthCheckManager
-import mesosphere.marathon.state.{ AppDefinition, AppRepository, PathId }
+import mesosphere.marathon.state.{ AppDefinition, AppRepository, PathId, Timestamp }
 import mesosphere.marathon.tasks._
+import mesosphere.marathon.tasks.TaskQueue.QueuedTask
 import mesosphere.mesos.util.FrameworkIdUtil
 import mesosphere.mesos.{ TaskBuilder, protos }
 import org.apache.log4j.Logger
@@ -18,7 +19,8 @@ import org.apache.mesos.Protos._
 import org.apache.mesos.{ Scheduler, SchedulerDriver }
 
 import scala.collection.JavaConverters._
-import scala.concurrent.Future
+import scala.collection.immutable.Seq
+import scala.concurrent.{ Await, Future }
 import scala.util.{ Failure, Success }
 
 trait SchedulerCallbacks {
@@ -26,11 +28,15 @@ trait SchedulerCallbacks {
 }
 
 object MarathonScheduler {
-  private class MarathonSchedulerCallbacksImpl(serviceOption: Option[MarathonSchedulerService]) extends SchedulerCallbacks {
+  private class MarathonSchedulerCallbacksImpl(
+    serviceOption: Option[MarathonSchedulerService])
+      extends SchedulerCallbacks {
+
     override def disconnected(): Unit = {
       // Abdicate leadership when we become disconnected from the Mesos master.
       serviceOption.foreach(_.abdicateLeadership())
     }
+
   }
 
   val callbacks: SchedulerCallbacks = new MarathonSchedulerCallbacksImpl(
@@ -82,7 +88,14 @@ class MarathonScheduler @Inject() (
         driver.killTask(protos.TaskID(task.getId))
     }
 
-    import mesosphere.marathon.tasks.TaskQueue.QueuedTask
+    // remove queued tasks with stale (non-current) app definition versions
+    val appVersions: Map[PathId, Timestamp] =
+      Await.result(appRepo.currentAppVersions(), config.zkTimeoutDuration)
+
+    taskQueue.retain {
+      case QueuedTask(app, _) =>
+        appVersions.get(app.id) contains app.version
+    }
 
     for (offer <- offers.asScala) {
       try {
@@ -90,11 +103,23 @@ class MarathonScheduler @Inject() (
 
         val queuedTasks: Seq[QueuedTask] = taskQueue.removeAll()
 
-        val withTaskInfos: Seq[(QueuedTask, Option[(TaskInfo, Seq[Long])])] =
-          queuedTasks.view.map { qt => qt -> newTask(qt.app, offer) }
+        val withTaskInfos: Seq[(QueuedTask, (TaskInfo, Seq[Long]))] =
+          queuedTasks.view.flatMap { qt => newTask(qt.app, offer).map(qt -> _) }.to[Seq]
 
-        val launchedTask: Option[QueuedTask] = withTaskInfos.collectFirst {
-          case (qt, Some((taskInfo, ports))) if qt.delay.isOverdue =>
+        val launchedTask = withTaskInfos.dropWhile {
+          case (qt, (taskInfo, ports)) =>
+            val timeLeft = qt.delay.timeLeft
+            if (timeLeft.toNanos <= 0) {
+              false
+            }
+            else {
+              log.info(s"Delaying task ${taskInfo.getTaskId.getValue} due to backoff. Time left: $timeLeft.")
+              true
+            }
+        }.headOption
+
+        launchedTask.foreach {
+          case (qt, (taskInfo, ports)) =>
             val taskInfos = Seq(taskInfo)
             log.debug("Launching tasks: " + taskInfos)
 
@@ -104,11 +129,10 @@ class MarathonScheduler @Inject() (
 
             taskTracker.created(qt.app.id, marathonTask)
             driver.launchTasks(Seq(offer.getId).asJava, taskInfos.asJava)
-            qt
         }
 
         // put unscheduled tasks back in the queue
-        taskQueue.addAll(queuedTasks diff launchedTask.toSeq)
+        taskQueue.addAll(queuedTasks diff launchedTask.to[Seq])
 
         if (launchedTask.isEmpty) {
           log.debug("Offer doesn't match request. Declining.")
@@ -146,7 +170,7 @@ class MarathonScheduler @Inject() (
 
     if (status.getState == TASK_FAILED || killedForFailingHealthChecks)
       appRepo.currentVersion(appId).foreach {
-        _.foreach(taskQueue.rateLimiter.addDelay(_))
+        _.foreach(taskQueue.rateLimiter.addDelay)
       }
     status.getState match {
       case TASK_FAILED | TASK_FINISHED | TASK_KILLED | TASK_LOST =>
@@ -184,7 +208,11 @@ class MarathonScheduler @Inject() (
     }
   }
 
-  override def frameworkMessage(driver: SchedulerDriver, executor: ExecutorID, slave: SlaveID, message: Array[Byte]): Unit = {
+  override def frameworkMessage(
+    driver: SchedulerDriver,
+    executor: ExecutorID,
+    slave: SlaveID,
+    message: Array[Byte]): Unit = {
     log.info("Received framework message %s %s %s ".format(executor, slave, message))
     eventBus.publish(MesosFrameworkMessageEvent(executor.getValue, slave.getValue, message))
   }
@@ -239,6 +267,7 @@ class MarathonScheduler @Inject() (
         status.getSlaveId.getValue,
         status.getTaskId.getValue,
         status.getState.name,
+        if (status.hasMessage) status.getMessage else "",
         taskIdUtil.appId(status.getTaskId),
         task.getHost,
         task.getPortsList.asScala,

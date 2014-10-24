@@ -51,7 +51,7 @@ object Constraints {
 
       // Order groupings by smallest first
       val orderedByCount = groupedTasks.toSeq.sortBy(_._2.size)
-      def minValue = orderedByCount.headOption.flatMap(_._1).getOrElse("")
+      def minValue: String = orderedByCount.headOption.flatMap(_._1).getOrElse("")
 
       // Return true if any of these are also true:
       // a) this offer matches the smallest grouping when there
@@ -64,7 +64,7 @@ object Constraints {
             // or all groups are the same size
             orderedByCount.headOption.map(_._2.size) == orderedByCount.lastOption.map(_._2.size))
 
-      def condB = !orderedByCount.exists(_._1.exists(_ == attr.get.getText.getValue))
+      def condB: Boolean = !orderedByCount.exists(_._1.contains(attr.get.getText.getValue))
 
       condA || condB
     }
@@ -72,6 +72,7 @@ object Constraints {
     private def checkHostName =
       constraint.getOperator match {
         case Operator.LIKE   => offer.getHostname.matches(value)
+        case Operator.UNLIKE => !offer.getHostname.matches(value)
         // All running tasks must have a hostname that is different from the one in the offer
         case Operator.UNIQUE => tasks.forall(_.getHost != offer.getHostname)
         case Operator.CLUSTER =>
@@ -83,7 +84,7 @@ object Constraints {
       }
 
     private def checkAttribute = {
-      def matches = matchTaskAttributes(tasks, field, attr.get.getText.getValue)
+      def matches: Iterable[MarathonTask] = matchTaskAttributes(tasks, field, attr.get.getText.getValue)
       constraint.getOperator match {
         case Operator.UNIQUE => matches.isEmpty
         case Operator.CLUSTER =>
@@ -100,15 +101,19 @@ object Constraints {
             log.warn("Error, value is required for LIKE operation")
             false
           }
+        case Operator.UNLIKE =>
+          if (value.nonEmpty) {
+            !attr.get.getText.getValue.matches(value)
+          }
+          else {
+            log.warn("Error, value is required for UNLIKE operation")
+            false
+          }
       }
     }
 
     /**
       * Filters running tasks by matching their attributes to this field & value.
-      * @param tasks
-      * @param field
-      * @param value
-      * @return
       */
     private def matchTaskAttributes(tasks: Iterable[MarathonTask], field: String, value: String) =
       tasks.filter {

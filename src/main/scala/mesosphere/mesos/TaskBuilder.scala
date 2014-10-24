@@ -1,6 +1,5 @@
 package mesosphere.mesos
 
-import mesosphere.marathon.state.PathId
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
@@ -13,10 +12,13 @@ import org.apache.mesos.Protos.Environment._
 import org.apache.mesos.Protos._
 
 import mesosphere.marathon._
-import mesosphere.marathon.state.AppDefinition
+import mesosphere.marathon.state.{ AppDefinition, PathId }
 import mesosphere.marathon.tasks.{ PortsMatcher, TaskTracker }
+import mesosphere.marathon.Protos.HealthCheckDefinition.Protocol
+import mesosphere.marathon.Protos.Constraint
 import mesosphere.mesos.protos.{ RangesResource, Resource, ScalarResource }
 
+import scala.collection.immutable.Seq
 import scala.util.{ Failure, Success, Try }
 
 class TaskBuilder(app: AppDefinition,
@@ -42,7 +44,10 @@ class TaskBuilder(app: AppDefinition,
         diskRole = disk
         portsResource = ranges
       case _ =>
-        log.info(s"No matching offer for ${app.id} (need cpus=${app.cpus}, mem=${app.mem}, disk=${app.disk}, ports=${app.ports}) : " + offer)
+        log.info(
+          s"No matching offer for ${app.id} (need cpus=${app.cpus}, mem=${app.mem}, " +
+            s"disk=${app.disk}, ports=${app.hostPorts}) : " + offer
+        )
         return None
     }
 
@@ -53,7 +58,9 @@ class TaskBuilder(app: AppDefinition,
       Executor.dispatch(app.executor)
     }
 
-    val ports = portsResource.ranges.flatMap(_.asScala())
+    val host: Option[String] = Some(offer.getHostname)
+
+    val ports = portsResource.ranges.flatMap(_.asScala()).to[Seq]
 
     val taskId = newTaskId(app.id)
     val builder = TaskInfo.newBuilder
@@ -67,10 +74,28 @@ class TaskBuilder(app: AppDefinition,
       builder.addResources(portsResource)
     }
 
+    val containerProto: Option[ContainerInfo] =
+      app.container.map { c =>
+        val portMappings = c.docker.map { d =>
+          d.portMappings.map { pms =>
+            pms zip ports map {
+              case (mapping, port) => mapping.copy(hostPort = port.toInt)
+            }
+          }
+        }
+        val containerWithPortMappings = portMappings match {
+          case None => c
+          case Some(newMappings) => c.copy(
+            docker = c.docker.map { _.copy(portMappings = newMappings) }
+          )
+        }
+        containerWithPortMappings.toMesos
+      }
+
     executor match {
       case CommandExecutor() =>
-        builder.setCommand(TaskBuilder.commandInfo(app, ports))
-        for (c <- app.container) builder.setContainer(c.toProto)
+        builder.setCommand(TaskBuilder.commandInfo(app, host, ports))
+        for (c <- containerProto) builder.setContainer(c)
 
       case PathExecutor(path) =>
         val executorId = f"marathon-${taskId.getValue}" // Fresh executor
@@ -78,47 +103,44 @@ class TaskBuilder(app: AppDefinition,
         val cmd = app.cmd orElse app.args.map(_ mkString " ") getOrElse ""
         val shell = s"chmod ug+rx $executorPath && exec $executorPath $cmd"
         val command =
-          TaskBuilder.commandInfo(app, ports).toBuilder.setValue(shell)
+          TaskBuilder.commandInfo(app, host, ports).toBuilder.setValue(shell)
 
         val info = ExecutorInfo.newBuilder()
           .setExecutorId(ExecutorID.newBuilder().setValue(executorId))
           .setCommand(command)
-        for (c <- app.container) info.setContainer(c.toProto)
+        for (c <- containerProto) info.setContainer(c)
         builder.setExecutor(info)
         val binary = new ByteArrayOutputStream()
         mapper.writeValue(binary, app)
         builder.setData(ByteString.copyFrom(binary.toByteArray))
     }
 
-    if (config.executorHealthChecks()) {
-      import mesosphere.marathon.Protos.HealthCheckDefinition.Protocol
-
-      // Mesos supports at most one health check, and only COMMAND checks
-      // are currently implemented.
-      val mesosHealthCheck: Option[org.apache.mesos.Protos.HealthCheck] =
-        app.healthChecks.collectFirst {
-          case healthCheck if healthCheck.protocol == Protocol.COMMAND =>
-            Try(healthCheck.toMesos(ports.map(_.toInt))) match {
-              case Success(mhc) => Some(mhc)
-              case Failure(cause) =>
-                log.warn(
-                  s"An error occurred with health check [$healthCheck]\n" +
-                    s"Error: [${cause.getMessage}]")
-                None
-            }
-        }.flatten
-
-      mesosHealthCheck foreach builder.setHealthCheck
-
-      if (mesosHealthCheck.size < app.healthChecks.size) {
-        val numUnusedChecks = app.healthChecks.size - mesosHealthCheck.size
-        log.warn(
-          "Mesos supports one command health check per task.\n" +
-            s"Task [$taskId] will run without " +
-            s"$numUnusedChecks of its defined health checks."
-        )
+    // Mesos supports at most one health check, and only COMMAND checks
+    // are currently implemented in the Mesos health check helper program.
+    val mesosHealthChecks: Set[org.apache.mesos.Protos.HealthCheck] =
+      app.healthChecks.flatMap { healthCheck =>
+        if (healthCheck.protocol != Protocol.COMMAND) None
+        else {
+          try { Some(healthCheck.toMesos(ports.map(_.toInt))) }
+          catch {
+            case cause: Throwable =>
+              log.warn(s"An error occurred with health check [$healthCheck]\n" +
+                s"Error: [${cause.getMessage}]")
+              None
+          }
+        }
       }
+
+    if (mesosHealthChecks.size > 1) {
+      val numUnusedChecks = mesosHealthChecks.size - 1
+      log.warn(
+        "Mesos supports one command health check per task.\n" +
+          s"Task [$taskId] will run without " +
+          s"$numUnusedChecks of its defined health checks."
+      )
     }
+
+    mesosHealthChecks.headOption.foreach(builder.setHealthCheck)
 
     Some(builder.build -> ports)
   }
@@ -151,30 +173,37 @@ class TaskBuilder(app: AppDefinition,
       return None
     }
 
-    if (!portMatcher.matches) {
-      log.warn("App ports are not available in the offer.")
-      return None
+    val badConstraints: Set[Constraint] = {
+      val runningTasks = taskTracker.get(app.id)
+      app.constraints.filterNot { constraint =>
+        Constraints.meetsConstraint(runningTasks, offer, constraint)
+      }
     }
 
-    if (app.constraints.nonEmpty) {
-      val runningTasks = taskTracker.get(app.id)
-      val constraintsMet = app.constraints.forall(
-        Constraints.meetsConstraint(runningTasks, offer, _)
-      )
-      if (!constraintsMet) {
-        log.warn("Did not meet a constraint in an offer.")
-        return None
-      }
-      log.info("Met all constraints.")
+    portMatcher.portRanges match {
+      case None =>
+        log.warn("App ports are not available in the offer.")
+        None
+
+      case _ if badConstraints.nonEmpty =>
+        log.warn(
+          s"Offer did not satisfy constraints for app [${app.id}].\n" +
+            s"Conflicting constraints are: [${badConstraints.mkString(", ")}]"
+        )
+        None
+
+      case Some(portRanges) =>
+        log.info("Met all constraints.")
+        Some((cpuRole, memRole, diskRole, portRanges))
     }
-    Some((cpuRole, memRole, diskRole, portMatcher.portRanges.get))
   }
+
 }
 
 object TaskBuilder {
 
-  def commandInfo(app: AppDefinition, ports: Seq[Long]) = {
-    val envMap = app.env ++ portsEnv(ports)
+  def commandInfo(app: AppDefinition, host: Option[String], ports: Seq[Long]): CommandInfo = {
+    val envMap = app.env ++ portsEnv(ports) ++ host.map("HOST" -> _)
 
     val builder = CommandInfo.newBuilder()
       .setEnvironment(environment(envMap))
@@ -208,22 +237,16 @@ object TaskBuilder {
   }
 
   private def isExtract(stringuri: String): Boolean = {
-    if (stringuri.endsWith(".tgz") ||
+    stringuri.endsWith(".tgz") ||
       stringuri.endsWith(".tar.gz") ||
       stringuri.endsWith(".tbz2") ||
       stringuri.endsWith(".tar.bz2") ||
       stringuri.endsWith(".txz") ||
       stringuri.endsWith(".tar.xz") ||
-      stringuri.endsWith(".zip")) {
-      return true;
-    }
-    else {
-      return false;
-    }
-
+      stringuri.endsWith(".zip")
   }
 
-  def environment(vars: Map[String, String]) = {
+  def environment(vars: Map[String, String]): Environment = {
     val builder = Environment.newBuilder()
 
     for ((key, value) <- vars) {
